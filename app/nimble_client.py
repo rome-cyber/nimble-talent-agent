@@ -90,7 +90,7 @@ def extract(url: str) -> str:
         if not raw:
             return ""
         text = _html_to_text(raw) if raw.lstrip().startswith("<") else raw
-        return text[:3000]
+        return text[:10000]
     except Exception as e:
         print(f"  [nimble.extract] {url}: {e}")
         return ""

@@ -24,7 +24,7 @@ class TalentState(TypedDict, total=False):
 
     # Phase 3 — Scoring
     scored_candidates: list     # [{...candidate fields, role_fit_score, culture_fit_score, ...}]
-    usage_stats: dict            # {haiku_calls, sonnet_calls, candidates_scored, filtered_out}
+    usage_stats: dict            # {haiku_calls, sonnet_calls, candidates_scored, filtered_out, est_cost_usd}
 
     # Control
     iteration: int

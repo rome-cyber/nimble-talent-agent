@@ -3,7 +3,7 @@ import {
   Search, RefreshCw, CheckCircle, Zap, Loader2,
   ExternalLink, ChevronDown, ChevronUp, Briefcase,
   AlertCircle, Target, ArrowLeft, ArrowRight, Database, Users,
-  ThumbsUp, ThumbsDown, Lightbulb, List, Bookmark, X,
+  ThumbsUp, ThumbsDown, List, Bookmark, X,
 } from 'lucide-react'
 import type { ICP, Candidate, PhaseEntry, CacheInfo, CareerSnapshotItem } from './types'
 
@@ -22,7 +22,7 @@ const RATINGS_KEY  = 'nimble-candidate-ratings'
 const SAVED_KEY    = 'nimble-saved-searches'
 const LAST_RUN_KEY = 'nimble-last-run'   // auto-save — restored on any page reload
 const MAX_SAVED    = 20
-const LAST_RUN_TTL = 4 * 60 * 60 * 1000 // 4 hours
+const LAST_RUN_TTL = 24 * 60 * 60 * 1000 // 24 hours
 
 // ── Saved-search types ─────────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ function CacheBar({ info, onRefresh }: { info: CacheInfo; onRefresh: () => void 
 function IdleHero() {
   const cards = [
     { icon: <Briefcase size={18} />, title: 'Researches the role',        body: "Builds a job description from Nimble's careers page and web context — no manual input needed." },
-    { icon: <Search size={18} />,    title: 'Searches LinkedIn at scale', body: "5 Boolean-enhanced queries across distinct strategies using Nimble's real-time data API." },
+    { icon: <Search size={18} />,    title: 'Searches LinkedIn at scale', body: "8 queries across 8 distinct search strategies using Nimble's real-time data API." },
     { icon: <Target size={18} />,    title: 'Scores bidirectionally',     body: 'Rates role fit, culture fit, and likelihood to join — so you only contact people worth reaching out to.' },
   ]
   return (
@@ -271,6 +271,7 @@ function ProgressPanel({ phases, displayFraction, liveElapsed, remaining, status
         <p className="text-[11px] text-slate-400 mt-3 pt-3 border-t border-slate-100 tabular-nums">
           ~{usage.candidates_scored ?? 0} scored · ~{usage.haiku_calls ?? 0} Haiku · ~{usage.sonnet_calls ?? 0} Sonnet call{(usage.sonnet_calls ?? 0) !== 1 ? 's' : ''}
           {(usage.filtered_out ?? 0) > 0 && ` · ${usage.filtered_out} pre-filtered`}
+          {(usage.est_cost_usd ?? 0) > 0 && ` · est. $${(usage.est_cost_usd as number).toFixed(3)}`}
         </p>
       ) : null}
     </div>
@@ -328,86 +329,116 @@ function ICPSkeleton() {
 
 function ICPCard({ icp }: { icp: ICP }) {
   return (
-    <div className="card p-5 animate-scale-in overflow-hidden max-w-full">
-      <div className="flex items-start gap-3 mb-1 flex-wrap">
+    <div className="card p-5 animate-scale-in overflow-hidden max-w-full space-y-5">
+      <div className="flex items-start gap-3 flex-wrap">
         <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-widest flex items-center gap-2 shrink-0">
           <Users size={13} style={{ color: 'var(--nimble-gold)' }} /> Ideal Candidate Profile
         </h3>
         {icp.seniority_range && (
-          <span className="text-[11px] bg-slate-100 text-slate-500 px-2.5 py-0.5 rounded-full break-words max-w-full">
+          <span className="text-[11px] bg-slate-100 text-slate-500 px-2.5 py-0.5 rounded-full">
             {icp.seniority_range}
           </span>
         )}
       </div>
 
       {icp.company_summary && (
-        <p className="text-xs text-slate-500 italic leading-relaxed my-3 pl-3 border-l-2 break-words"
+        <p className="text-xs text-slate-500 italic leading-relaxed pl-3 border-l-2"
           style={{ borderColor: 'var(--nimble-gold)', wordBreak: 'break-word' }}>
           {icp.company_summary}
         </p>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-3 text-xs">
-        <div className="space-y-4 min-w-0">
-          {icp.key_skills?.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Key Skills</div>
-              <div className="flex flex-wrap gap-1.5">
-                {icp.key_skills.slice(0, 10).map(s => (
-                  <span key={s} className="px-2.5 py-1 rounded-full text-[11px] font-medium break-words"
-                    style={{ background: 'rgba(232,184,75,0.12)', color: '#92610a', border: '1px solid rgba(232,184,75,0.3)' }}>
-                    {s}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {icp.career_trajectory_patterns?.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Career Paths to Nimble</div>
-              <ul className="space-y-1">
-                {icp.career_trajectory_patterns.slice(0, 3).map(p => (
-                  <li key={p} className="text-slate-500 leading-tight break-words" style={{ wordBreak: 'break-word' }}>→ {p}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {icp.location_context && (
-            <div className="text-slate-500 break-words" style={{ wordBreak: 'break-word' }}>
-              <span className="font-semibold text-slate-600">Location: </span>{icp.location_context}
-            </div>
-          )}
+      {/* Section 1: What we're looking for (BASE_CANDIDATE_ICP fields) */}
+      <div>
+        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+          <span style={{ color: 'var(--nimble-gold)' }}>▸</span> What we're looking for
         </div>
-
-        <div className="space-y-4 min-w-0">
-          {icp.green_flags?.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Strong Signals</div>
-              <ul className="space-y-1.5">
-                {icp.green_flags.slice(0, 4).map(f => (
-                  <li key={f} className="flex gap-2 text-slate-600 leading-tight">
-                    <CheckCircle size={12} className="text-emerald-500 shrink-0 mt-0.5" />
-                    <span className="break-words" style={{ wordBreak: 'break-word' }}>{f}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {icp.red_flags?.length > 0 && (
-            <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Disqualifiers</div>
-              <ul className="space-y-1.5">
-                {icp.red_flags.slice(0, 3).map(f => (
-                  <li key={f} className="flex gap-2 text-slate-600 leading-tight">
-                    <AlertCircle size={12} className="text-red-400 shrink-0 mt-0.5" />
-                    <span className="break-words" style={{ wordBreak: 'break-word' }}>{f}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="space-y-3 min-w-0">
+            {icp.key_skills?.length > 0 && (
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Key Skills</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {icp.key_skills.slice(0, 10).map(s => (
+                    <span key={s} className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                      style={{ background: 'rgba(232,184,75,0.12)', color: '#92610a', border: '1px solid rgba(232,184,75,0.3)' }}>
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="space-y-3 min-w-0">
+            {icp.green_flags?.length > 0 && (
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Strong Signals</div>
+                <ul className="space-y-1.5">
+                  {icp.green_flags.slice(0, 5).map(f => (
+                    <li key={f} className="flex gap-2 text-slate-600 leading-tight">
+                      <CheckCircle size={12} className="text-emerald-500 shrink-0 mt-0.5" />
+                      <span style={{ wordBreak: 'break-word' }}>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {icp.red_flags?.length > 0 && (
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Disqualifiers</div>
+                <ul className="space-y-1.5">
+                  {icp.red_flags.slice(0, 4).map(f => (
+                    <li key={f} className="flex gap-2 text-slate-600 leading-tight">
+                      <AlertCircle size={12} className="text-red-400 shrink-0 mt-0.5" />
+                      <span style={{ wordBreak: 'break-word' }}>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Section 2: What current employees look like (employee analysis) */}
+      {(icp.career_trajectory_patterns?.length > 0 || icp.typical_roles?.length > 0) && (
+        <div className="pt-4 border-t border-slate-100">
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <span className="text-slate-300">▸</span> What current employees look like
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+            <div className="space-y-3 min-w-0">
+              {icp.career_trajectory_patterns?.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Career Paths to Nimble</div>
+                  <ul className="space-y-1">
+                    {icp.career_trajectory_patterns.slice(0, 4).map(p => (
+                      <li key={p} className="text-slate-500 leading-tight" style={{ wordBreak: 'break-word' }}>→ {p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <div className="space-y-3 min-w-0">
+              {icp.typical_roles?.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-2">Typical Roles</div>
+                  <div className="flex flex-wrap gap-1">
+                    {icp.typical_roles.slice(0, 6).map(r => (
+                      <span key={r} className="text-[11px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">{r}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {icp.location_context && (
+                <div className="text-slate-500" style={{ wordBreak: 'break-word' }}>
+                  <span className="font-semibold text-slate-600">Location: </span>{icp.location_context}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -498,12 +529,54 @@ function CandidateDrawer({ candidate, onClose }: {
                 </div>
               </div>
 
-              {/* Why yes / Why no */}
+              {/* Nimble fit + Candidate fit */}
+              {(c.nimble_fit || c.candidate_fit) && (
+                <div className="space-y-4">
+                  {c.nimble_fit && (
+                    <div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why Nimble would want them</div>
+                      <p className="text-xs text-slate-600 leading-relaxed">{c.nimble_fit}</p>
+                    </div>
+                  )}
+                  {c.candidate_fit && (
+                    <div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why they might want Nimble</div>
+                      <p className="text-xs text-slate-600 leading-relaxed">{c.candidate_fit}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Friction */}
+              {c.friction && c.friction !== 'None identified.' && (
+                <div className="bg-amber-50 border border-amber-200/70 rounded-xl px-4 py-3">
+                  <div className="text-[10px] font-semibold text-amber-700 uppercase tracking-widest mb-1.5">Friction</div>
+                  <p className="text-xs text-amber-800 leading-relaxed">{c.friction}</p>
+                </div>
+              )}
+
+              {/* Career arc */}
+              {c.career_narrative && (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Career Arc</div>
+                  <p className="text-xs text-slate-500 leading-relaxed italic">{c.career_narrative}</p>
+                </div>
+              )}
+
+              {/* ICP signal map */}
+              {c.icp_match && (
+                <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-2.5">
+                  <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">ICP Signal Map</div>
+                  <p className="text-xs text-slate-600 leading-relaxed">{c.icp_match}</p>
+                </div>
+              )}
+
+              {/* Why prioritize / Potential friction */}
               {((c.why_yes?.length ?? 0) > 0 || (c.why_no?.length ?? 0) > 0) && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {(c.why_yes?.length ?? 0) > 0 && (
                     <div>
-                      <div className="text-[10px] font-semibold text-emerald-600 uppercase tracking-widest mb-2">Why they'd say yes</div>
+                      <div className="text-[10px] font-semibold text-emerald-600 uppercase tracking-widest mb-2">Why prioritize</div>
                       <ul className="space-y-2">
                         {c.why_yes!.map((r, i) => (
                           <li key={i} className="flex gap-2 text-xs text-slate-700 leading-relaxed">
@@ -516,27 +589,17 @@ function CandidateDrawer({ candidate, onClose }: {
                   )}
                   {(c.why_no?.length ?? 0) > 0 && (
                     <div>
-                      <div className="text-[10px] font-semibold text-red-500 uppercase tracking-widest mb-2">Potential friction</div>
+                      <div className="text-[10px] font-semibold text-amber-600 uppercase tracking-widest mb-2">Potential friction</div>
                       <ul className="space-y-2">
                         {c.why_no!.map((r, i) => (
                           <li key={i} className="flex gap-2 text-xs text-slate-700 leading-relaxed">
-                            <AlertCircle size={12} className="text-red-400 shrink-0 mt-0.5" />
+                            <AlertCircle size={12} className="text-amber-500 shrink-0 mt-0.5" />
                             {r}
                           </li>
                         ))}
                       </ul>
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* Opening angle */}
-              {c.outreach_hook && (
-                <div className="bg-amber-50 border border-amber-200/70 rounded-xl px-4 py-3">
-                  <div className="text-[10px] font-semibold text-amber-700 uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                    <Lightbulb size={11} /> Opening angle
-                  </div>
-                  <p className="text-xs text-amber-800 leading-relaxed italic">{c.outreach_hook}</p>
                 </div>
               )}
 
@@ -648,6 +711,10 @@ function CandidateCard({ c, index, rating, onRate, onSelect, isSelected }: {
             </span>
           ))}
         </div>
+
+        {c.icp_match && (
+          <p className="text-[11px] text-slate-400 leading-snug mb-2 line-clamp-1">{c.icp_match}</p>
+        )}
 
         {c.availability_signals?.length > 0 && (
           <div className="flex gap-1 flex-wrap mb-2.5">
@@ -999,6 +1066,9 @@ export default function App() {
   const goodShown      = good.filter(c => c.overall_score >= minScore)
   const weakShown      = weak.filter(c => c.overall_score >= minScore)
   const reviewedCount  = candidates.filter(c => ratings[c.url]).length
+  const openSignals    = allSorted.filter(c => (c.availability_signals?.length ?? 0) > 0).length
+  const aiMlCount      = allSorted.filter(c => /\b(AI|ML|machine learning|LLM|NLP|data science|GPT|deep learning|neural|reinforcement)\b/i.test((c.headline || '') + ' ' + (c.snippet || ''))).length
+  const startupCount   = allSorted.filter(c => /\b(startup|series [abc]|scaleup|scale-up|founder|early.stage)\b/i.test((c.headline || '') + ' ' + (c.snippet || ''))).length
 
   const isActive       = (status === 'running' || status === 'done') && !loadedFromSave
   const showResults    = candidates.length > 0 && status === 'done'
@@ -1109,8 +1179,11 @@ export default function App() {
                     </span>
                   )}
                 </h2>
-                <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-3">
+                <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-3 flex-wrap">
                   <span>{candidates.length} candidates evaluated{totalElapsed > 0 && ` · ${totalElapsed}s`}</span>
+                  {aiMlCount > 0 && <span>AI/ML: {aiMlCount}</span>}
+                  {startupCount > 0 && <span>Startup: {startupCount}</span>}
+                  {openSignals > 0 && <span>Open signals: {openSignals}</span>}
                   {reviewedCount > 0 && (
                     <span className="flex items-center gap-1 text-slate-500">
                       <CheckCircle size={11} className="text-emerald-500" />
@@ -1154,6 +1227,33 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* Zero strong matches diagnostic */}
+            {strong.length === 0 && candidates.length > 0 && (
+              <div className="card p-5 animate-fade-in">
+                <div className="flex gap-3">
+                  <AlertCircle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="font-semibold text-slate-700 text-sm mb-1">No strong matches (score ≥ 7)</h3>
+                    <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                      {candidates.length} candidates scored but none hit 7+.
+                      {queriesLog.length > 0 && ` ${queriesLog.length} search strategies ran.`}
+                      {' '}Try adding role-specific notes or use a broader title.
+                    </p>
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => startRun()}
+                        className="text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded-lg font-medium transition-colors duration-150">
+                        Re-run search
+                      </button>
+                      <button onClick={reset}
+                        className="text-xs text-slate-500 hover:text-slate-700 border border-slate-200 px-3 py-1.5 rounded-lg transition-colors duration-150">
+                        Try different title
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Strong */}
             {strongShown.length > 0 && (

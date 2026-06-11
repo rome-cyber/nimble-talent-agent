@@ -25,7 +25,7 @@ from app.cache import get_cache_info
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

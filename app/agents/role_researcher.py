@@ -83,7 +83,7 @@ def research_role(state: TalentState) -> dict:
     icp = state.get("icp", {})
     notes_section = f"\nADDITIONAL NOTES FROM HIRING MANAGER:\n{additional_notes}" if additional_notes else ""
 
-    prompt = f"""You are building a job description for Nimble (nimbleway.com), a web data and scraping API startup.
+    prompt = f"""You are building a job description for Nimble (nimbleway.com), the AI search platform for production agents.
 
 ROLE TO FILL: {job_title}
 

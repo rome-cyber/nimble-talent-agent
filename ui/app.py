@@ -1,3 +1,6 @@
+# LEGACY: Streamlit UI — superseded by frontend/ (React + FastAPI)
+# Kept for reference only. Not maintained.
+
 from __future__ import annotations
 
 import sys

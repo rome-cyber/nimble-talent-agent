@@ -29,7 +29,12 @@ export interface Candidate {
   overall_score: number
   reasoning: string
   availability_signals: string[]
-  outreach_hook?: string
+  // Narrative fields from Phase 4 scoring prompt
+  nimble_fit?: string
+  candidate_fit?: string
+  friction?: string
+  career_narrative?: string
+  icp_match?: string
   // Drawer fields — added in batch-scoring pass
   role_fit_explanation?: string
   culture_fit_explanation?: string

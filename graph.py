@@ -31,11 +31,20 @@ def _should_refine(state: TalentState) -> str:
     iteration = state.get("iteration", 0)
 
     if len(top) >= 5:
-        return "done"                         # solid shortlist — stop immediately
+        print(f"[graph] Stopping: {len(top)} strong matches found after iteration {iteration}")
+        return "done"
+
     if len(top) >= 3 and iteration >= 2:
-        return "done"                         # good enough after one refinement pass
+        avg_role = sum(c.get("role_fit_score", 0) for c in scored) / len(scored) if scored else 0
+        if avg_role > 6.5:
+            print(f"[graph] Stopping: {len(top)} strong matches, avg role fit {avg_role:.1f} after iteration {iteration}")
+            return "done"
+
     if iteration >= 3:
-        return "done"                         # hard cap
+        print(f"[graph] Stopping: max iterations ({iteration}) reached with {len(top)} strong matches")
+        return "done"
+
+    print(f"[graph] Refining: only {len(top)} strong matches after iteration {iteration} — generating new queries")
     return "refine"
 
 
