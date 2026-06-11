@@ -1,0 +1,157 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ──────────────────────────────────────────────────── */
+:root {
+  --nimble-gold:     #E8B84B;
+  --nimble-gold-lt:  #F5D06B;
+  --nimble-gold-dk:  #C49520;
+  --nimble-black:    #0A0A0A;
+
+  --dur-fast:   150ms;
+  --dur-base:   250ms;
+  --dur-slow:   400ms;
+  --ease-std:   cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+  --ease-exit:  cubic-bezier(0.4, 0, 1, 1);
+}
+
+/* ── Base ───────────────────────────────────────────────────────────── */
+html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: #F7F8FA;
+}
+
+/* ── Component classes ──────────────────────────────────────────────── */
+@layer components {
+
+  /* Gold CTA button */
+  .btn-gold {
+    background: linear-gradient(135deg, var(--nimble-gold-lt) 0%, var(--nimble-gold) 55%, var(--nimble-gold-dk) 100%);
+    color: var(--nimble-black);
+    font-weight: 600;
+    transition: filter var(--dur-fast) var(--ease-std),
+                transform var(--dur-fast) var(--ease-std),
+                box-shadow var(--dur-fast) var(--ease-std);
+  }
+  .btn-gold:hover:not(:disabled) {
+    filter: brightness(1.06);
+    box-shadow: 0 4px 12px rgba(232,184,75,0.35);
+  }
+  .btn-gold:active:not(:disabled) {
+    transform: scale(0.97);
+    filter: brightness(0.97);
+  }
+  .btn-gold:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(232,184,75,0.4);
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    color: #64748b;
+    transition: color var(--dur-fast) var(--ease-std),
+                background var(--dur-fast) var(--ease-std);
+  }
+  .btn-ghost:hover { color: #1e293b; background: #f1f5f9; border-radius: 6px; }
+
+  /* Card surface */
+  .card {
+    background: white;
+    border-radius: 16px;
+    border: 1px solid #e9ecef;
+    box-shadow: 0 1px 3px 0 rgba(0,0,0,0.05);
+  }
+
+  /* Text input */
+  .field {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    font-size: 0.875rem;
+    color: #0f172a;
+    transition: border-color var(--dur-fast) var(--ease-std),
+                box-shadow var(--dur-fast) var(--ease-std),
+                background var(--dur-fast) var(--ease-std);
+  }
+  .field::placeholder { color: #94a3b8; }
+  .field:focus {
+    outline: none;
+    border-color: var(--nimble-gold);
+    background: white;
+    box-shadow: 0 0 0 3px rgba(232,184,75,0.18);
+  }
+
+  /* Gold gradient text */
+  .text-gold {
+    background: linear-gradient(135deg, var(--nimble-gold-lt), var(--nimble-gold), var(--nimble-gold-dk));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Skeleton loader */
+  .skeleton {
+    background: linear-gradient(90deg, #f0f2f5 25%, #e8eaed 50%, #f0f2f5 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+    border-radius: 6px;
+  }
+
+  /* Score ring */
+  .score-ring {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    border-width: 2px;
+    border-style: solid;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+    font-size: 1.125rem;
+    line-height: 1;
+  }
+}
+
+/* ── Range input (can't be done with Tailwind) ───────────────────────── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #e2e8f0;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--nimble-gold-lt), var(--nimble-gold-dk));
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  transition: transform var(--dur-fast) var(--ease-std);
+}
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+/* ── Scrollbar ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── Reduced motion ─────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
