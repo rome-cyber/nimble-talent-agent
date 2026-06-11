@@ -99,6 +99,13 @@ def _hash_employees(profiles: list) -> str:
     return hashlib.md5(json.dumps(urls).encode()).hexdigest()[:12]
 
 
+def _hash_icp_inputs(profiles: list, candidate_icp: str) -> str:
+    """Cache key that captures both who's on the team AND what the hiring team wants."""
+    urls = sorted(p.get("url", "") for p in profiles if p.get("url"))
+    payload = json.dumps({"urls": urls, "icp": candidate_icp.strip()})
+    return hashlib.md5(payload.encode()).hexdigest()[:12]
+
+
 def fetch_employees(state: TalentState) -> dict:
     force = state.get("force_refresh", False)
 
@@ -193,16 +200,17 @@ def fetch_employees(state: TalentState) -> dict:
 
 
 def build_icp(state: TalentState) -> dict:
-    force    = state.get("force_refresh", False)
-    profiles = state.get("employee_raw", [])
+    force         = state.get("force_refresh", False)
+    profiles      = state.get("employee_raw", [])
+    candidate_icp = (state.get("candidate_icp") or "").strip()
 
-    emp_hash   = _hash_employees(profiles)
-    cached_icp = cache.get_icp(force_refresh=force, employee_hash=emp_hash)
+    icp_hash   = _hash_icp_inputs(profiles, candidate_icp)
+    cached_icp = cache.get_icp(force_refresh=force, employee_hash=icp_hash)
     if cached_icp is not None:
-        print(f"[build_icp] Cache hit (hash={emp_hash}) — skipping rebuild")
+        print(f"[build_icp] Cache hit (hash={icp_hash}) — skipping rebuild")
         return {"icp": cached_icp, "_icp_from_cache": True}
 
-    print(f"[build_icp] Cache miss (hash={emp_hash}) — building ICP...")
+    print(f"[build_icp] Cache miss (hash={icp_hash}) — building ICP...")
 
     company_name    = (state.get("company_name") or "the company").strip()
     company_context = state.get("company_context", "")
@@ -260,6 +268,6 @@ Return ONLY valid JSON:
         print(f"[build_icp] JSON parse error: {e} — fallback")
         icp = {}
 
-    cache.save_icp(icp, employee_hash=emp_hash)
-    print(f"[build_icp] Done — {len(icp.get('key_skills', []))} skills, saved to cache (hash={emp_hash})")
+    cache.save_icp(icp, employee_hash=icp_hash)
+    print(f"[build_icp] Done — {len(icp.get('key_skills', []))} skills, saved to cache (hash={icp_hash})")
     return {"icp": icp, "_icp_from_cache": False}
