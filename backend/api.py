@@ -77,6 +77,10 @@ class RunRequest(BaseModel):
     job_title: str
     additional_notes: str = ""
     force_refresh: bool = False
+    company_name: str = ""
+    company_website: str = ""
+    company_linkedin_url: str = ""
+    candidate_icp: str = ""
 
 
 def _run_graph(run_id: str, req: RunRequest):
@@ -91,6 +95,10 @@ def _run_graph(run_id: str, req: RunRequest):
             "job_title": req.job_title,
             "additional_notes": req.additional_notes,
             "force_refresh": req.force_refresh,
+            "company_name": req.company_name,
+            "company_website": req.company_website,
+            "company_linkedin_url": req.company_linkedin_url,
+            "candidate_icp": req.candidate_icp,
             "raw_candidates": [],
             "all_queries_used": [],
             "iteration": 0,

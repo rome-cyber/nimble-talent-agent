@@ -1,5 +1,5 @@
 """
-Phase 3 node: bidirectional scoring — does Nimble want them? Would they want Nimble?
+Phase 3 node: bidirectional scoring — does the company want them? Would they want to join?
 
 Cost optimizations:
   A. Batched scoring: 5 candidates per Sonnet call
@@ -25,7 +25,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import anthropic
 from app.models import TalentState
-from app.nimble_context import NIMBLE_FOR_PROMPT
+from app.nimble_context import build_company_context
 
 _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), timeout=120.0)
 
@@ -47,7 +47,13 @@ def _truncate_profile(c: dict) -> dict:
 
 # ── C. Haiku pre-filter ───────────────────────────────────────────────────────
 
-def _prefilter_with_haiku(candidates: list, job_title: str, token_acc: dict | None = None) -> list:
+def _prefilter_with_haiku(
+    candidates: list,
+    job_title: str,
+    company_name: str,
+    icp: dict,
+    token_acc: dict | None = None,
+) -> list:
     """
     Haiku relevance filter on the FULL deduplicated pool.
     Called before the dynamic cap so it can actually remove noise.
@@ -56,6 +62,15 @@ def _prefilter_with_haiku(candidates: list, job_title: str, token_acc: dict | No
     if len(candidates) <= 4:
         return candidates
 
+    # Build keep/drop criteria from ICP if available
+    key_skills = icp.get("key_skills", [])
+    typical_roles = icp.get("typical_roles", [])
+    keep_hints = ""
+    if key_skills:
+        keep_hints += f"\nKey skills to look for: {', '.join(key_skills[:8])}"
+    if typical_roles:
+        keep_hints += f"\nTypical roles: {', '.join(typical_roles[:5])}"
+
     kept: list = []
     for batch_start in range(0, len(candidates), _HAIKU_BATCH):
         batch = candidates[batch_start : batch_start + _HAIKU_BATCH]
@@ -63,29 +78,14 @@ def _prefilter_with_haiku(candidates: list, job_title: str, token_acc: dict | No
             f"[{i + 1}] {c.get('name', '')} | {c.get('headline', '')} | {c.get('snippet', '')[:120]}"
             for i, c in enumerate(batch)
         )
-        prompt = f"""You are filtering {len(batch)} LinkedIn profiles for a "{job_title}" role at Nimble — the AI search platform for production agents. Nimble hires people with backgrounds in AI, data, software engineering, B2B sales, product, and related technical/business fields.
+        prompt = f"""You are filtering {len(batch)} LinkedIn profiles for a "{job_title}" role at {company_name}.{keep_hints}
 
-KEEP (keep=true):
-  AI / ML / LLM / data science / NLP
-  Software engineering, backend, platform, infrastructure, DevOps
-  Data engineering, analytics, data pipelines
-  B2B sales, account executive, solutions engineering, business development
-  Product management, product marketing, growth
-  Startup or scaleup operators, GTM, revenue
-  API or SaaS product experience
-  Technical recruiting or talent (adjacent)
-  Students or recent grads in CS, data science, or engineering
-
-DROP (keep=false) — ONLY if there is CLEARLY ZERO connection to tech, software, or business:
-  Pure clinical healthcare (nurse, doctor, dentist, pharmacist) with no tech role
-  Skilled trades with no tech crossover (plumber, electrician, carpenter)
-  Retail / hospitality / food service with no tech crossover
-  Arts, entertainment, or creative fields with no tech or business role
-  Pure academic research with zero industry experience and no tech stack
-  Government / military with no software or technology role
-
+KEEP (keep=true) any profile with a plausible connection to the role or company's domain.
 When in doubt: keep=true.
-Only mark keep=false when there is CLEARLY ZERO connection to technology, software, or business.
+
+DROP (keep=false) ONLY when there is CLEARLY ZERO connection to the role:
+  - Wrong field entirely (e.g. plumber applying for a software role)
+  - No overlap with required skills, industry, or role type
 
 Profiles:
 {lines}
@@ -122,10 +122,7 @@ Return ONLY valid JSON array, one entry per candidate, same order:
 # ── D. Python pre-ranking ─────────────────────────────────────────────────────
 
 def _prerank_candidates(candidates: list, icp: dict) -> list:
-    """
-    Free Python keyword heuristics — zero API cost.
-    Surfaces the best candidates before LLM work. NO cap applied here.
-    """
+    """Free Python keyword heuristics — zero API cost. NO cap applied here."""
     skills  = [s.lower() for s in icp.get("key_skills", [])]
     green   = [g.lower() for g in icp.get("green_flags", [])]
     red     = [r.lower() for r in icp.get("red_flags", [])]
@@ -156,16 +153,21 @@ def _prerank_candidates(candidates: list, icp: dict) -> list:
 
 # ── B. Static scoring context (cached across batches) ─────────────────────────
 
-def _build_static_context(job_title: str, job_description: str, icp: dict) -> str:
+def _build_static_context(
+    job_title: str,
+    job_description: str,
+    icp: dict,
+    company_ctx: str,
+) -> str:
     """
     Build the reusable scoring context once per run.
     The IDENTICAL string is passed to every batch — any variation breaks prompt caching.
     Must be >1024 tokens for Anthropic caching to activate.
     """
-    return f"""You are a senior talent sourcing agent for Nimble (nimbleway.com).
-Your job: score candidates for BIDIRECTIONAL fit — would Nimble want to hire them, AND would they genuinely want to join?
+    return f"""You are a senior talent sourcing agent.
+Your job: score candidates for BIDIRECTIONAL fit — would the company want to hire them, AND would they genuinely want to join?
 
-{NIMBLE_FOR_PROMPT}
+{company_ctx}
 
 ══════════════════════════════════════════════
 ROLE TO FILL
@@ -177,59 +179,53 @@ Job Description:
 
 ══════════════════════════════════════════════
 IDEAL CANDIDATE PROFILE
-(from current Nimble employee analysis)
+(from current employee analysis)
 ══════════════════════════════════════════════
 {json.dumps(icp, indent=2)[:1200]}
 
 ══════════════════════════════════════════════
-SCORING SCALE — calibrated to Nimble specifically
+SCORING SCALE
 ══════════════════════════════════════════════
 
-9–10  Ex-Bright Data / Exa / Tavily / Apify / Oxylabs engineer or direct equivalent.
-      Startup history (2+ companies under 200 people). Currently at Series A–C or recently left.
+9–10  Near-perfect ICP match. Background aligns directly with the company's domain.
+      Startup history (2+ companies under 200 people). Currently at relevant stage.
       Open to work signal visible, or ≤18 months at current role.
-      Domain is core Nimble territory: web data, AI agents, retrieval, scraping infrastructure.
 
-7–8   Production AI engineer or relevant IC at a B2B SaaS startup.
+7–8   Strong fit. Relevant IC at a B2B SaaS or startup.
       2–3 year tenure — settled but not locked in.
-      No explicit "open" signal but career trajectory shows consistent mobility.
-      Domain overlap is strong (AI/ML, data infra, APIs, LLMs) even without exact Nimble match.
+      Domain overlap is strong even without exact company match.
 
-5–6   Relevant background (data, APIs, SaaS, cloud) but at a large enterprise.
-      Limited startup history, or domain is adjacent rather than direct.
+5–6   Relevant background but at a large enterprise or adjacent domain.
       Could be a fit but requires real effort to find and convert.
 
-3–4   Some technical background but far from Nimble's core space.
-      No startup history, no AI/data signals, or tenure signals suggest locked-in.
+3–4   Some relevant background but far from the ICP.
       A long shot.
 
-1–2   Clear mismatch. Non-technical, wrong domain, no signals of relevance.
-      Save everyone's time.
+1–2   Clear mismatch. Wrong domain, no signals of relevance.
 
 ══════════════════════════════════════════════
 INTEREST SCORE — start at 5, apply deltas
 ══════════════════════════════════════════════
 POSITIVE signals (add):
-  +2.0  "Open to Work" or "seeking" visible in profile — strongest available signal
-  +2.0  Two or more startup stints (self-selects startup environments)
+  +2.0  "Open to Work" or "seeking" visible in profile
+  +2.0  Two or more startup stints
   +1.5  Changed jobs within last 6–12 months
   +1.0  At current role 18–36 months (settled but not locked)
-  +1.0  At current role 4+ years, no visible promotion (may be ready to move)
-  +1.0  Active LinkedIn presence visible in data
-  +1.0  Remote-first or location-flexible signals in profile
+  +1.0  At current role 4+ years, no visible promotion
+  +1.0  Remote-first or location-flexible signals
   +1.0  Located in preferred location per ICP above
   +0.5  Career stage suited for a startup move
 
 NEGATIVE signals (subtract):
   -1.5  FAANG / Fortune 500 for 5+ years, zero startup history
-  -1.0  No domain overlap with Nimble's space
+  -1.0  No domain overlap with the company's space
 
 RULES: No signals → stay at 5. Missing data is NOT negative. Cap 1–10.
 
 ══════════════════════════════════════════════
 CALIBRATION RULES
 ══════════════════════════════════════════════
-- Realistic center of mass for a good search: 6–8. Most candidates land here.
+- Realistic center of mass for a good search: 6–8.
 - 9–10 is rare: reserve for near-perfect ICP match WITH clear interest signals.
 - 1–3 is for clear mismatches only — not "I don't have enough info."
 - Missing data is NOT a reason to score below 5. Evidence-based, not absence-of-evidence.
@@ -238,53 +234,41 @@ CALIBRATION RULES
 
 ══════════════════════════════════════════════
 OUTPUT FIELD INSTRUCTIONS
-Write for a recruiter who knows Nimble but is not a technical expert.
+Write for a recruiter who knows the company but is not a technical expert.
 ══════════════════════════════════════════════
 
-nimble_fit:
-  WHY NIMBLE WOULD WANT THEM. 2–3 sentences.
-  Be specific to their actual background — name the company, role, or skill.
-  Write "Built RAG pipelines at a B2B SaaS startup" not "strong technical background."
-  Write "3 years at Bright Data before joining a Series A AI company" not "relevant experience."
+company_fit:
+  WHY THE COMPANY WOULD WANT THEM. 2–3 sentences.
+  Be specific — name the actual company, role, or skill from their profile.
 
 candidate_fit:
-  WHY THEY MIGHT WANT NIMBLE. 2–3 sentences.
+  WHY THEY MIGHT WANT TO JOIN. 2–3 sentences.
   Use career stage signals, tenure, startup history, and domain overlap.
   If signals are weak: write "Limited signals — interest would need to be verified directly."
-  Do not manufacture enthusiasm where there is none.
 
 friction:
   HONEST BLOCKERS. 1–2 sentences.
-  Location mismatch, seniority gap, enterprise lock-in, no startup history,
-  FAANG retention risk. Do not soften.
+  Location mismatch, seniority gap, enterprise lock-in. Do not soften.
   If genuinely clean: write "None identified."
 
 career_narrative:
-  THE ARC. 2 sentences.
-  What does their career tell you about them as a professional?
-  What problems have they been solving? Where are they in their development?
-  Example: "Spent 4 years at enterprise data companies building ETL pipelines before moving
-  to two successive AI startups — trajectory suggests deliberate move toward the AI-native
-  stack. Currently at Series B which suggests comfort with early-stage environments."
+  THE ARC. 2 sentences. What does their career tell you about them as a professional?
 
 icp_match:
   ONE-LINE ICP SIGNAL MAP.
-  Example: "Hits: production AI, startup background, B2B SaaS. Missing: web data domain,
-  location unclear."
+  Example: "Hits: production AI, startup background. Missing: domain overlap, location unclear."
 
 why_yes:
-  REASONS TO PRIORITIZE (recruiter perspective — NOT "why the candidate would like Nimble").
-  "Strong ICP match on 4/5 signals" not "Nimble's culture would appeal to them."
+  REASONS TO PRIORITIZE (recruiter perspective).
   2–3 items.
 
 why_no:
-  GENUINE DEPRIORITIZERS. Friction, fit gaps, conversion effort required.
-  1–2 items. Omit or leave empty if genuinely clean.
+  GENUINE DEPRIORITIZERS. 1–2 items. Omit or leave empty if genuinely clean.
 
-role_fit_explanation:   1–2 sentences on role fit score specifically.
-culture_fit_explanation: 1–2 sentences on culture/background fit vs Nimble ICP.
-interest_explanation:   1–2 sentences explaining the interest score calculation.
-reasoning:              2–3 sentence overall summary — worth reaching out or not, and why.
+role_fit_explanation:    1–2 sentences on role fit score specifically.
+culture_fit_explanation: 1–2 sentences on culture/background fit vs ICP.
+interest_explanation:    1–2 sentences explaining the interest score calculation.
+reasoning:               2–3 sentence overall summary — worth reaching out or not, and why.
 """
 
 
@@ -312,17 +296,17 @@ Return ONLY valid JSON array — no markdown, no explanation:
     "culture_fit_score": 8,
     "interest_score": 6,
     "overall_score": 7,
-    "nimble_fit": "2-3 sentences on why Nimble would want them — specific to their actual background",
-    "candidate_fit": "2-3 sentences on why they might want Nimble, or 'Limited signals — ...' if weak",
+    "company_fit": "2-3 sentences on why the company would want them — specific to their actual background",
+    "candidate_fit": "2-3 sentences on why they might want to join, or 'Limited signals — ...' if weak",
     "friction": "1-2 sentences on honest blockers, or 'None identified' if clean",
     "career_narrative": "2 sentences: what their career arc tells you about them as a professional",
     "icp_match": "One sentence: Hits: X, Y. Missing: A, B.",
     "role_fit_explanation": "1-2 sentences on role fit score",
-    "culture_fit_explanation": "1-2 sentences on culture/background fit vs Nimble ICP",
+    "culture_fit_explanation": "1-2 sentences on culture/background fit vs ICP",
     "interest_explanation": "1-2 sentences explaining the interest score",
     "reasoning": "2-3 sentence overall summary for the recruiter",
     "availability_signals": ["specific observable signal from profile"],
-    "why_yes": ["reason recruiter should prioritize this person — not candidate motivation"],
+    "why_yes": ["reason recruiter should prioritize this person"],
     "why_no": ["genuine friction point or fit gap"],
     "career_snapshot": [
       {{"company": "Company Name", "role": "Job Title", "duration": "~2 years"}}
@@ -343,7 +327,7 @@ Return ONLY valid JSON array — no markdown, no explanation:
         }],
     )
 
-    # Truncation detected — split and retry before attempting to parse
+    # Truncation detected — split and retry
     if resp.stop_reason == "max_tokens":
         print(f"[score_batch] Truncated — retrying as 2x smaller batches")
         if len(batch) <= 1:
@@ -355,7 +339,6 @@ Return ONLY valid JSON array — no markdown, no explanation:
         merged = {k: u1.get(k, 0) + u2.get(k, 0) for k in set(u1) | set(u2)}
         return r1 + r2, merged
 
-    # Log cache hit / miss with percentage
     usage_dict: dict = {}
     if hasattr(resp, "usage"):
         u = resp.usage
@@ -367,9 +350,9 @@ Return ONLY valid JSON array — no markdown, no explanation:
         pct         = int(cache_read / total_in * 100) if total_in else 0
         print(f"  [cache] batch {batch_num}: read={cache_read} write={cache_write} ({pct}% cached)")
         usage_dict = {
-            "cache_read":   cache_read,
-            "cache_write":  cache_write,
-            "input_tokens": input_tok,
+            "cache_read":    cache_read,
+            "cache_write":   cache_write,
+            "input_tokens":  input_tok,
             "output_tokens": output_tok,
         }
 
@@ -389,13 +372,15 @@ Return ONLY valid JSON array — no markdown, no explanation:
 def score_candidates(state: TalentState) -> dict:
     print("[score_candidates] Starting scoring pipeline...")
 
-    raw       = state.get("raw_candidates", [])
-    icp       = state.get("icp", {})
-    job_title = state.get("job_title", "")
-    job_desc  = state.get("job_description", "")
+    raw          = state.get("raw_candidates", [])
+    icp          = state.get("icp", {})
+    job_title    = state.get("job_title", "")
+    job_desc     = state.get("job_description", "")
+    company_name = (state.get("company_name") or "the company").strip()
+    company_ctx  = build_company_context(state)
 
-    # 1. Deduplicate by URL across all fan-out iterations
-    seen: set   = set()
+    # 1. Deduplicate by URL
+    seen: set    = set()
     unique: list = []
     for c in raw:
         url = c.get("url", "")
@@ -406,7 +391,7 @@ def score_candidates(state: TalentState) -> dict:
     if not unique:
         return {"scored_candidates": []}
 
-    # 2. Pre-rank with Python heuristics — NO CAP, let Haiku see the full pool
+    # 2. Pre-rank with Python heuristics — NO CAP
     unique = _prerank_candidates(unique, icp)
 
     # 3. Truncate profiles before sending to any LLM
@@ -417,7 +402,7 @@ def score_candidates(state: TalentState) -> dict:
     pre_haiku   = len(unique)
     haiku_calls = 0
     if len(unique) > 4:
-        unique      = _prefilter_with_haiku(unique, job_title, token_acc)
+        unique      = _prefilter_with_haiku(unique, job_title, company_name, icp, token_acc)
         haiku_calls = 1
 
     kept       = len(unique)
@@ -425,9 +410,9 @@ def score_candidates(state: TalentState) -> dict:
     filter_pct = int(filtered / pre_haiku * 100) if pre_haiku else 0
     print(f"[score_candidates] Haiku filtered {filtered}/{pre_haiku} ({filter_pct}%)")
     if pre_haiku > 20 and filter_pct < 20:
-        print(f"[score_candidates] WARNING: Haiku filtering <20% — search queries may be too narrow or well-targeted")
+        print(f"[score_candidates] WARNING: Haiku filtering <20% — queries may be well-targeted or too narrow")
     if filter_pct > 60:
-        print(f"[score_candidates] WARNING: Haiku filtering >60% — search queries may be too broad")
+        print(f"[score_candidates] WARNING: Haiku filtering >60% — queries may be too broad")
 
     # 5. Dynamic cap after Haiku
     if kept >= 40:
@@ -435,7 +420,7 @@ def score_candidates(state: TalentState) -> dict:
         print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → capping at top 25 for Sonnet")
     else:
         to_score = unique[:]
-        label = "sending all" if kept >= 20 else f"Haiku kept only {kept} (low filter value)"
+        label = "sending all" if kept >= 20 else f"Haiku kept only {kept}"
         print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → {label} to Sonnet")
 
     if not to_score:
@@ -447,15 +432,15 @@ def score_candidates(state: TalentState) -> dict:
             },
         }
 
-    # 6. Build static context ONCE — identical string to every batch (cache key)
-    static_context = _build_static_context(job_title, job_desc, icp)
+    # 6. Build static context ONCE
+    static_context = _build_static_context(job_title, job_desc, icp, company_ctx)
 
-    # 7. Batch 1 primes prompt cache; remaining batches run in parallel (cache reads)
-    all_scored: list  = []
-    sonnet_calls      = 0
-    batches           = [to_score[i : i + _BATCH_SIZE] for i in range(0, len(to_score), _BATCH_SIZE)]
-    total_batches     = len(batches)
-    all_usage: dict   = dict(token_acc)  # start with Haiku tokens
+    # 7. Batch 1 primes prompt cache; remaining batches run in parallel
+    all_scored: list = []
+    sonnet_calls     = 0
+    batches          = [to_score[i : i + _BATCH_SIZE] for i in range(0, len(to_score), _BATCH_SIZE)]
+    total_batches    = len(batches)
+    all_usage: dict  = dict(token_acc)
 
     print(f"  [score_batch] 1/{total_batches} — scoring {len(batches[0])} candidates (cache warm-up)")
     try:
@@ -488,8 +473,6 @@ def score_candidates(state: TalentState) -> dict:
     all_scored = sorted(all_scored, key=lambda x: x.get("overall_score", 0), reverse=True)
 
     # 8. Credit estimate
-    # Sonnet: $3.00/M regular in, $0.30/M cache read, $3.75/M cache write, $15.00/M out
-    # Haiku:  $1.00/M in, $5.00/M out
     est_cost = (
         (all_usage.get("haiku_input",  0) / 1_000_000) * 1.00 +
         (all_usage.get("haiku_output", 0) / 1_000_000) * 5.00 +
@@ -499,7 +482,6 @@ def score_candidates(state: TalentState) -> dict:
         (all_usage.get("output_tokens",0) / 1_000_000) * 15.00
     )
 
-    # Accumulate across refinement iterations
     prev        = state.get("usage_stats", {})
     usage_stats = {
         "haiku_calls":       prev.get("haiku_calls", 0) + haiku_calls,

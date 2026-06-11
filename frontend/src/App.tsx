@@ -18,11 +18,34 @@ const PHASE_LABELS: Record<string, string> = {
   score_candidates: 'Scoring candidates',
 }
 
-const RATINGS_KEY  = 'nimble-candidate-ratings'
-const SAVED_KEY    = 'nimble-saved-searches'
-const LAST_RUN_KEY = 'nimble-last-run'   // auto-save — restored on any page reload
+const RATINGS_KEY  = 'talent-candidate-ratings'
+const SAVED_KEY    = 'talent-saved-searches'
+const LAST_RUN_KEY = 'talent-last-run'
+const COMPANY_KEY  = 'talent-company-setup'
 const MAX_SAVED    = 20
 const LAST_RUN_TTL = 24 * 60 * 60 * 1000 // 24 hours
+
+interface CompanySetup {
+  company_name: string
+  company_website: string
+  company_linkedin_url: string
+  candidate_icp: string
+}
+
+const DEFAULT_COMPANY: CompanySetup = {
+  company_name: '',
+  company_website: '',
+  company_linkedin_url: '',
+  candidate_icp: '',
+}
+
+function readCompany(): CompanySetup {
+  try { return { ...DEFAULT_COMPANY, ...JSON.parse(localStorage.getItem(COMPANY_KEY) || '{}') } }
+  catch { return DEFAULT_COMPANY }
+}
+function writeCompany(c: CompanySetup) {
+  localStorage.setItem(COMPANY_KEY, JSON.stringify(c))
+}
 
 // ── Saved-search types ─────────────────────────────────────────────────────────
 
@@ -78,6 +101,92 @@ function ChevronRight({ size = 14 }: { size?: number }) {
       stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9 18 15 12 9 6" />
     </svg>
+  )
+}
+
+// ── Company setup card ────────────────────────────────────────────────────────
+
+function CompanySetupCard({ setup, onChange }: {
+  setup: CompanySetup
+  onChange: (s: CompanySetup) => void
+}) {
+  const [open, setOpen] = useState(!setup.company_name)
+  const configured = !!setup.company_name
+
+  const set = (field: keyof CompanySetup) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    onChange({ ...setup, [field]: e.target.value })
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors duration-150"
+      >
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+          <Briefcase size={12} /> Company setup
+          {configured && (
+            <span className="text-emerald-600 font-semibold normal-case tracking-normal text-[11px]">
+              · {setup.company_name}
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-2">
+          {!configured && (
+            <span className="text-[10px] text-amber-600 font-semibold">required</span>
+          )}
+          {open ? <ChevronUp size={13} className="text-slate-300" /> : <ChevronDown size={13} className="text-slate-300" />}
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100 px-4 py-4 space-y-4 animate-slide-down">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
+                Company name <span className="text-red-400 normal-case font-normal tracking-normal">required</span>
+              </label>
+              <input className="field" value={setup.company_name} onChange={set('company_name')}
+                placeholder="Acme Corp" />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
+                Company website <span className="text-slate-300 normal-case font-normal tracking-normal">optional</span>
+              </label>
+              <input className="field" value={setup.company_website} onChange={set('company_website')}
+                placeholder="acme.com" />
+              <p className="text-[11px] text-slate-400 mt-1">Used to fetch your careers page and company description</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
+              LinkedIn company URL <span className="text-slate-300 normal-case font-normal tracking-normal">optional</span>
+            </label>
+            <input className="field" value={setup.company_linkedin_url} onChange={set('company_linkedin_url')}
+              placeholder="linkedin.com/company/acme" />
+            <p className="text-[11px] text-slate-400 mt-1">Used to build an ICP from your current employee profiles</p>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
+              Candidate ICP <span className="text-slate-300 normal-case font-normal tracking-normal">optional but recommended</span>
+            </label>
+            <textarea
+              className="field resize-none"
+              rows={5}
+              value={setup.candidate_icp}
+              onChange={set('candidate_icp')}
+              placeholder={`Describe your ideal candidate in plain text. This overrides the auto-built profile.\n\nExample:\nKey skills: Python, LLM systems, RAG pipelines, B2B SaaS\nGreen flags: startup background, shipped AI in production, open to work\nRed flags: no engineering experience, pure academic\nLocation: SF Bay Area, NYC, remote-friendly`}
+            />
+            <p className="text-[11px] text-slate-400 mt-1">Plain text — describe key skills, green flags, red flags, and location preferences</p>
+          </div>
+
+          <p className="text-[11px] text-slate-400 italic">
+            Saved automatically to your browser. Never sent anywhere except your own backend.
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -530,17 +639,17 @@ function CandidateDrawer({ candidate, onClose }: {
               </div>
 
               {/* Nimble fit + Candidate fit */}
-              {(c.nimble_fit || c.candidate_fit) && (
+              {(c.company_fit || c.candidate_fit) && (
                 <div className="space-y-4">
-                  {c.nimble_fit && (
+                  {c.company_fit && (
                     <div>
-                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why Nimble would want them</div>
-                      <p className="text-xs text-slate-600 leading-relaxed">{c.nimble_fit}</p>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why the company would want them</div>
+                      <p className="text-xs text-slate-600 leading-relaxed">{c.company_fit}</p>
                     </div>
                   )}
                   {c.candidate_fit && (
                     <div>
-                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why they might want Nimble</div>
+                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">Why they might want to join</div>
                       <p className="text-xs text-slate-600 leading-relaxed">{c.candidate_fit}</p>
                     </div>
                   )}
@@ -800,6 +909,7 @@ function JobDescAccordion({ text }: { text: string }) {
 // ── Main App ───────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [company,           setCompany]           = useState<CompanySetup>(() => readCompany())
   const [jobTitle,          setJobTitle]          = useState('')
   const [notes,             setNotes]             = useState('')
   const [status,            setStatus]            = useState<'idle' | 'running' | 'done' | 'error'>('idle')
@@ -902,6 +1012,11 @@ export default function App() {
   }, [status, candidates])
 
   const closeDrawer = useCallback(() => setSelectedCandidate(null), [])
+
+  const updateCompany = (s: CompanySetup) => {
+    setCompany(s)
+    writeCompany(s)
+  }
 
   // ── Ratings ───────────────────────────────────────────────────────────────────
 
@@ -1009,7 +1124,15 @@ export default function App() {
       const res = await fetch('/api/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_title: jobTitle, additional_notes: notes, force_refresh: forceRefresh }),
+        body: JSON.stringify({
+          job_title: jobTitle,
+          additional_notes: notes,
+          force_refresh: forceRefresh,
+          company_name: company.company_name,
+          company_website: company.company_website,
+          company_linkedin_url: company.company_linkedin_url,
+          candidate_icp: company.candidate_icp,
+        }),
       })
       runId = (await res.json()).run_id
     } catch {
@@ -1082,6 +1205,9 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-5">
 
+        {/* Company setup */}
+        <CompanySetupCard setup={company} onChange={updateCompany} />
+
         {/* Search form */}
         <div className="card p-6 space-y-4 animate-fade-in-up">
           {cacheInfo && <CacheBar info={cacheInfo} onRefresh={() => startRun(true)} />}
@@ -1102,7 +1228,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 pt-1">
-            <button onClick={() => startRun()} disabled={!jobTitle.trim() || status === 'running'}
+            <button onClick={() => startRun()} disabled={!jobTitle.trim() || !company.company_name.trim() || status === 'running'}
               className="btn-gold flex items-center gap-2 text-sm px-5 py-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed">
               {status === 'running'
                 ? <><Loader2 size={15} className="animate-spin" /> Searching…</>

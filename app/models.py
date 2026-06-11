@@ -6,13 +6,19 @@ from typing_extensions import TypedDict
 
 
 class TalentState(TypedDict, total=False):
-    # Input
+    # Input — company setup (from UI, saved in localStorage)
+    company_name: str           # e.g. "Acme Corp"
+    company_website: str        # e.g. "acme.com"
+    company_linkedin_url: str   # e.g. "linkedin.com/company/acme"
+    candidate_icp: str          # free-text ICP from hiring team (treated as authoritative)
+
+    # Input — per-search
     job_title: str
     additional_notes: str       # optional extra context from the user
     job_description: str        # researched + synthesized description (set by research_role node)
 
     # Phase 1 — ICP
-    company_context: str        # nimbleway.com content
+    company_context: str        # fetched from company website
     employee_raw: list          # [{url, name, headline, snippet}]
     icp: dict                   # structured ICP from Claude
 

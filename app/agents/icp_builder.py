@@ -1,5 +1,5 @@
 """
-Phase 1 nodes: fetch current Nimble employee profiles, then build an ICP.
+Phase 1 nodes: fetch current employee profiles, then build an ICP.
 Searches and the website extract run in parallel via ThreadPoolExecutor.
 Both nodes check the SQLite cache first — ICP is keyed by employee hash
 so it only regenerates when the employee list actually changes.
@@ -16,58 +16,74 @@ import anthropic
 from app.models import TalentState
 from app import nimble_client as nimble
 from app import cache
-from app.nimble_context import BASE_CANDIDATE_ICP
 
 _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# LinkedIn company people page — most reliable source of current employees
-_LINKEDIN_COMPANY_URL = "https://www.linkedin.com/company/nimbledata/people/"
 
-# Supplemental Google searches — keyed to the real company identifiers
-# Use "nimbleway.com" (domain) or "nimbledata" (LinkedIn slug) to avoid
-# false positives from the Swedish "Nimbleway" governance consultancy.
-_EMPLOYEE_QUERIES = [
-    '"nimbleway.com" site:linkedin.com/in',
-    'nimble "web data" OR "data extraction" OR "scraping API" site:linkedin.com/in',
-    'nimble "nimbleway.com" engineer OR developer site:linkedin.com/in',
-    'nimble "nimbleway.com" sales OR "account executive" OR BDR site:linkedin.com/in',
-    'nimble "web scraping" OR "data pipeline" startup Israel site:linkedin.com/in',
-    'nimble "nimbleway.com" product OR marketing site:linkedin.com/in',
-    '"nimbledata" OR "nimbleway.com" site:linkedin.com/in',
-]
+def _linkedin_company_url(state: TalentState) -> str:
+    """Normalise the user-provided LinkedIn company URL to the /people/ page."""
+    raw = (state.get("company_linkedin_url") or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if "/people" not in raw:
+        raw = raw + "/people/"
+    if not raw.startswith("http"):
+        raw = "https://" + raw
+    return raw
 
-# Keywords that confirm a profile is from the real Nimble (nimbleway.com)
-# At least one must appear in the profile text or URL.
-_NIMBLE_SIGNALS = [
-    "nimbleway.com", "nimbleway", "nimbledata",
-    "web data", "web scraping", "data extraction", "scraping api",
-    "@nimble",
-]
+
+def _employee_queries(state: TalentState) -> list[str]:
+    """
+    Build supplemental LinkedIn search queries from company name + website.
+    Falls back gracefully when fields are missing.
+    """
+    name    = (state.get("company_name") or "").strip()
+    website = (state.get("company_website") or "").strip().lower()
+    # strip protocol so we get the bare domain for search
+    domain  = re.sub(r'^https?://', '', website).rstrip("/") if website else ""
+
+    queries: list[str] = []
+
+    if domain:
+        queries.append(f'"{domain}" site:linkedin.com/in')
+    if name:
+        queries.append(f'"{name}" engineer OR developer site:linkedin.com/in')
+        queries.append(f'"{name}" sales OR "account executive" OR product site:linkedin.com/in')
+    if name and domain:
+        queries.append(f'"{name}" "{domain}" site:linkedin.com/in')
+
+    return queries
+
+
+def _company_signals(state: TalentState) -> list[str]:
+    """Signals used to confirm a profile actually belongs to the company."""
+    name    = (state.get("company_name") or "").strip().lower()
+    website = (state.get("company_website") or "").strip().lower()
+    domain  = re.sub(r'^https?://', '', website).rstrip("/") if website else ""
+
+    signals = []
+    if domain:
+        signals.append(domain)
+    if name:
+        signals.append(name)
+    return signals
 
 
 def _parse_company_page(content: str) -> list[dict]:
-    """
-    Extract employee profiles from the LinkedIn company people page.
-    The extracted text contains names, roles, and linkedin.com/in/ links.
-    """
+    """Extract employee profiles from a LinkedIn company people page."""
     profiles = []
     seen: set = set()
 
-    # Find every linkedin.com/in/ URL in the extracted content
     urls = re.findall(r'https?://(?:www\.)?linkedin\.com/in/[\w%-]+', content)
 
     for url in urls:
-        # Normalise trailing slashes / query params
         url = url.rstrip('/').split('?')[0]
         if url in seen:
             continue
         seen.add(url)
 
-        # Try to extract a name near this URL in the surrounding text
         idx = content.find(url)
         surrounding = content[max(0, idx - 200): idx + 200]
-
-        # LinkedIn page text usually has "Name\nTitle at Company" before the URL
         lines = [l.strip() for l in surrounding.split('\n') if l.strip()]
         name = lines[0] if lines else ''
         headline = lines[1] if len(lines) > 1 else ''
@@ -79,7 +95,6 @@ def _parse_company_page(content: str) -> list[dict]:
 
 
 def _hash_employees(profiles: list) -> str:
-    """Stable 12-char hash of employee URLs — detects when team composition changes."""
     urls = sorted(p.get("url", "") for p in profiles if p.get("url"))
     return hashlib.md5(json.dumps(urls).encode()).hexdigest()[:12]
 
@@ -94,18 +109,31 @@ def fetch_employees(state: TalentState) -> dict:
 
     print("[fetch_employees] Cache miss — fetching in parallel...")
 
-    tasks = {
-        "extract_about":   ("extract", "https://www.nimbleway.com/about"),
-        "extract_linkedin": ("extract", _LINKEDIN_COMPANY_URL),
-    }
-    for q in _EMPLOYEE_QUERIES:
+    linkedin_url  = _linkedin_company_url(state)
+    company_website = (state.get("company_website") or "").strip()
+    about_url     = ""
+    if company_website:
+        domain = re.sub(r'^https?://', '', company_website).rstrip("/")
+        about_url = f"https://{domain}/about"
+
+    tasks: dict = {}
+    if about_url:
+        tasks["extract_about"] = ("extract", about_url)
+    if linkedin_url:
+        tasks["extract_linkedin"] = ("extract", linkedin_url)
+    for q in _employee_queries(state):
         tasks[q] = ("search", q)
 
-    company_context = ""
-    profiles = []
-    seen_urls: set = set()
+    if not tasks:
+        print("[fetch_employees] No company info provided — skipping employee fetch")
+        return {"company_context": "", "employee_raw": [], "_from_cache": False}
 
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+    company_context = ""
+    profiles: list = []
+    seen_urls: set = set()
+    signals = _company_signals(state)
+
+    with ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
         futures = {}
         for key, (kind, arg) in tasks.items():
             if kind == "extract":
@@ -119,10 +147,11 @@ def fetch_employees(state: TalentState) -> dict:
                 result = future.result()
                 if kind == "extract_about":
                     company_context = result
-                    if len(company_context) < 200:
-                        company_context = nimble.extract("https://www.nimbleway.com")
+                    # fallback: try homepage if /about returned too little
+                    if len(company_context) < 200 and company_website:
+                        domain = re.sub(r'^https?://', '', company_website).rstrip("/")
+                        company_context = nimble.extract(f"https://{domain}")
                 elif kind == "extract_linkedin":
-                    # Parse employee profiles directly from the LinkedIn company people page
                     linkedin_profiles = _parse_company_page(result)
                     for p in linkedin_profiles:
                         url = p.get("url", "")
@@ -135,97 +164,85 @@ def fetch_employees(state: TalentState) -> dict:
                         if "linkedin.com/in/" in url and url not in seen_urls:
                             seen_urls.add(url)
                             title = r.get("title", "")
-                            name = title.split(" - ")[0].strip() if " - " in title else title.split("|")[0].strip()
+                            name  = title.split(" - ")[0].strip() if " - " in title else title.split("|")[0].strip()
                             profiles.append({
-                                "url": url,
-                                "name": name,
+                                "url":     url,
+                                "name":    name,
                                 "headline": title,
                                 "snippet": r.get("description", ""),
                             })
             except Exception as e:
                 print(f"  [fetch_employees] Error ({kind}): {e}")
 
-    # Validate: only keep profiles that actually reference the real Nimble
-    def _is_real_nimble_employee(p: dict) -> bool:
-        text = (p.get("url", "") + " " + p.get("headline", "") + " " + p.get("snippet", "")).lower()
-        return any(sig in text for sig in _NIMBLE_SIGNALS)
-
-    before = len(profiles)
-    profiles = [p for p in profiles if _is_real_nimble_employee(p)]
-    print(f"[fetch_employees] Validation: {before} → {len(profiles)} confirmed Nimble employees")
+    # Validate: only keep profiles that actually reference this company
+    if signals:
+        before   = len(profiles)
+        profiles = [
+            p for p in profiles
+            if any(sig in (p.get("url","") + " " + p.get("headline","") + " " + p.get("snippet","")).lower()
+                   for sig in signals)
+        ]
+        print(f"[fetch_employees] Validation: {before} → {len(profiles)} confirmed employees")
+    else:
+        # No signals to validate against — trust the LinkedIn company page results
+        print(f"[fetch_employees] {len(profiles)} profiles (no validation signals)")
 
     cache.save_employees(profiles, company_context)
     print(f"[fetch_employees] Found {len(profiles)} employees — saved to cache")
     return {"company_context": company_context, "employee_raw": profiles, "_from_cache": False}
 
 
-def _merge_with_base(auto: dict) -> dict:
-    """
-    Merge the auto-built employee ICP with BASE_CANDIDATE_ICP.
-    Base fields always win on conflict — they represent the real Nimble ICP.
-    Employee-analysis fields (typical_roles, career_trajectory_patterns, etc.)
-    are kept as supplementary data since they reflect real observed patterns.
-    """
-    merged = dict(auto)
-
-    # String fields: base always wins
-    for field in ("company_summary", "location_context", "culture_notes"):
-        if field in BASE_CANDIDATE_ICP:
-            merged[field] = BASE_CANDIDATE_ICP[field]
-
-    # List fields: base items first, then any unique items from employee analysis
-    for field in ("key_skills", "green_flags", "red_flags"):
-        base_items = BASE_CANDIDATE_ICP.get(field, [])
-        auto_items = auto.get(field, [])
-        base_lower = {s.lower() for s in base_items}
-        extra = [s for s in auto_items if s.lower() not in base_lower]
-        merged[field] = base_items + extra
-
-    return merged
-
-
 def build_icp(state: TalentState) -> dict:
     force    = state.get("force_refresh", False)
     profiles = state.get("employee_raw", [])
 
-    # Hash-based cache check: only skip rebuild if team composition unchanged
     emp_hash   = _hash_employees(profiles)
     cached_icp = cache.get_icp(force_refresh=force, employee_hash=emp_hash)
     if cached_icp is not None:
         print(f"[build_icp] Cache hit (hash={emp_hash}) — skipping rebuild")
-        return {"icp": _merge_with_base(cached_icp), "_icp_from_cache": True}
+        return {"icp": cached_icp, "_icp_from_cache": True}
 
     print(f"[build_icp] Cache miss (hash={emp_hash}) — building ICP...")
 
+    company_name    = (state.get("company_name") or "the company").strip()
     company_context = state.get("company_context", "")
+    candidate_icp   = (state.get("candidate_icp") or "").strip()
 
-    prompt = f"""You are analyzing current Nimble (nimbleway.com) employees to build an Ideal Candidate Profile (ICP) for talent sourcing.
+    hiring_team_section = ""
+    if candidate_icp:
+        hiring_team_section = f"""
+HIRING TEAM'S CANDIDATE ICP (treat as authoritative — incorporate these requirements):
+{candidate_icp}
+"""
 
-COMPANY CONTEXT (from nimbleway.com):
-{company_context[:2000]}
+    prompt = f"""You are analyzing current employees at {company_name} to build an Ideal Candidate Profile (ICP) for talent sourcing.
 
+COMPANY CONTEXT:
+{company_context[:2000] if company_context else "(not available)"}
+{hiring_team_section}
 CURRENT EMPLOYEE LINKEDIN PROFILES ({len(profiles)} found):
 {json.dumps(profiles[:30], indent=2)}
 
-Analyze these profiles carefully. Extract patterns from what you can actually observe — do not invent.
+Analyze the profiles. Extract patterns from what you can actually observe — do not invent.
 
-Focus especially on CAREER TRAJECTORY: What did these people do BEFORE Nimble? What companies, what roles, what career stage?
+Focus especially on CAREER TRAJECTORY: What did people do BEFORE joining? What companies, what roles, what career stage?
 This is the most predictive signal for finding new candidates who would actually join.
+
+{"If no employee profiles were provided, base the ICP entirely on the hiring team's requirements above and the company context." if not profiles else ""}
 
 Return ONLY valid JSON:
 {{
-  "company_summary": "2-3 sentence description of Nimble and its culture based on the data",
-  "typical_roles": ["role type observed at Nimble", "..."],
-  "typical_backgrounds": ["background pattern observed before joining Nimble", "..."],
-  "common_company_types": ["types of companies people came FROM before Nimble", "..."],
-  "career_trajectory_patterns": ["e.g. 'Enterprise SaaS AE → Nimble AE', 'Big data company engineer → Nimble engineer'"],
-  "education_patterns": ["education pattern observed", "..."],
+  "company_summary": "2-3 sentence description of {company_name} and its culture based on the data",
+  "typical_roles": ["role type observed", "..."],
+  "typical_backgrounds": ["background pattern observed before joining", "..."],
+  "common_company_types": ["types of companies people came FROM", "..."],
+  "career_trajectory_patterns": ["e.g. 'Enterprise SaaS AE → {company_name} AE'"],
   "key_skills": ["skill 1", "skill 2"],
-  "green_flags": ["signal that strongly suggests someone would thrive at Nimble", "..."],
+  "green_flags": ["signal that strongly suggests someone would thrive here", "..."],
   "red_flags": ["signal that suggests someone would NOT fit", "..."],
-  "location_context": "where Nimble employees are based based on what you see",
+  "location_context": "where employees are based",
   "seniority_range": "typical seniority level observed",
-  "culture_notes": "what the data suggests about Nimble's working culture and values"
+  "culture_notes": "what the data suggests about the working culture and values"
 }}"""
 
     resp = _client.messages.create(
@@ -242,9 +259,6 @@ Return ONLY valid JSON:
     except json.JSONDecodeError as e:
         print(f"[build_icp] JSON parse error: {e} — fallback")
         icp = {}
-
-    # Base ICP (from Nimble's real ICP) always overrides the employee analysis
-    icp = _merge_with_base(icp)
 
     cache.save_icp(icp, employee_hash=emp_hash)
     print(f"[build_icp] Done — {len(icp.get('key_skills', []))} skills, saved to cache (hash={emp_hash})")

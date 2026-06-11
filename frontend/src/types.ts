@@ -30,7 +30,7 @@ export interface Candidate {
   reasoning: string
   availability_signals: string[]
   // Narrative fields from Phase 4 scoring prompt
-  nimble_fit?: string
+  company_fit?: string
   candidate_fit?: string
   friction?: string
   career_narrative?: string
