@@ -11,7 +11,7 @@ import uuid
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +22,10 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 from graph import build_graph
 from app.cache import get_cache_info
+from app.search_db import (
+    auto_save_search, name_search, list_searches, get_search, delete_search,
+    get_role_signals,
+)
 
 app = FastAPI()
 app.add_middleware(
@@ -32,6 +36,7 @@ app.add_middleware(
 )
 
 _runs: dict[str, Queue] = {}
+_run_users: dict[str, str] = {}  # run_id → user_id
 
 # ── Timing ─────────────────────────────────────────────────────────────────────
 
@@ -84,7 +89,11 @@ class RunRequest(BaseModel):
     candidate_icp: str = ""
 
 
-def _run_graph(run_id: str, req: RunRequest):
+class RenameRequest(BaseModel):
+    name: str
+
+
+def _run_graph(run_id: str, req: RunRequest, user_id: str = ""):
     q = _runs[run_id]
 
     def emit(event: dict):
@@ -92,6 +101,7 @@ def _run_graph(run_id: str, req: RunRequest):
 
     try:
         graph = build_graph()
+        past_signals = get_role_signals(req.job_title)
         input_state = {
             "job_title": req.job_title,
             "additional_notes": req.additional_notes,
@@ -103,6 +113,7 @@ def _run_graph(run_id: str, req: RunRequest):
             "raw_candidates": [],
             "all_queries_used": [],
             "iteration": 0,
+            "past_signals": past_signals,
         }
 
         tracker = _Tracker()
@@ -170,9 +181,25 @@ def _run_graph(run_id: str, req: RunRequest):
 
             prev = current
 
-        elapsed = int(time.monotonic() - tracker._start)
-        usage   = prev.get("usage_stats", {}) if prev else {}
-        emit({"type": "done", "elapsed": elapsed, "usage": usage})
+        elapsed    = int(time.monotonic() - tracker._start)
+        usage      = prev.get("usage_stats", {}) if prev else {}
+        candidates = prev.get("scored_candidates", []) if prev else []
+        queries    = prev.get("all_queries_used", []) if prev else []
+        icp        = prev.get("icp") if prev else None
+        try:
+            auto_save_search(
+                search_id=run_id,
+                job_title=req.job_title,
+                company_name=req.company_name,
+                additional_notes=req.additional_notes,
+                queries=queries,
+                candidates=candidates,
+                icp=icp,
+                user_id=user_id,
+            )
+        except Exception as _e:
+            print(f"[auto_save] warning: {_e}")
+        emit({"type": "done", "elapsed": elapsed, "usage": usage, "search_id": run_id})
 
     except Exception as e:
         tb = traceback.format_exc()
@@ -185,12 +212,13 @@ def _run_graph(run_id: str, req: RunRequest):
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/run")
-async def start_run(req: RunRequest):
+async def start_run(req: RunRequest, x_user_id: str = Header(default="")):
     if not req.job_title.strip():
         raise HTTPException(400, "job_title is required")
     run_id = str(uuid.uuid4())
     _runs[run_id] = Queue()
-    threading.Thread(target=_run_graph, args=(run_id, req), daemon=True).start()
+    _run_users[run_id] = x_user_id
+    threading.Thread(target=_run_graph, args=(run_id, req, x_user_id), daemon=True).start()
     return {"run_id": run_id}
 
 
@@ -214,6 +242,7 @@ async def stream_run(run_id: str):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e) or type(e).__name__})}\n\n"
         finally:
             _runs.pop(run_id, None)
+            _run_users.pop(run_id, None)
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -222,6 +251,33 @@ async def stream_run(run_id: str):
 @app.get("/api/cache")
 async def cache_status():
     return get_cache_info()
+
+
+@app.get("/api/searches")
+async def get_searches(x_user_id: str = Header(default="")):
+    return list_searches(user_id=x_user_id)
+
+
+@app.get("/api/searches/{search_id}")
+async def get_search_detail(search_id: str, x_user_id: str = Header(default="")):
+    result = get_search(search_id)
+    if not result:
+        raise HTTPException(404, "Search not found")
+    return result
+
+
+@app.patch("/api/searches/{search_id}")
+async def rename_search(search_id: str, req: RenameRequest, x_user_id: str = Header(default="")):
+    if not req.name.strip():
+        raise HTTPException(400, "name is required")
+    name_search(search_id, req.name, user_id=x_user_id)
+    return {"ok": True}
+
+
+@app.delete("/api/searches/{search_id}")
+async def remove_search(search_id: str, x_user_id: str = Header(default="")):
+    delete_search(search_id, user_id=x_user_id)
+    return {"ok": True}
 
 
 # ── Serve React SPA (production) ───────────────────────────────────────────────

@@ -65,7 +65,6 @@ def _ensure_schema():
                 updated_at   TEXT NOT NULL
             );
         """)
-    # Migration: add employee_hash column if not yet present
     with _conn() as con:
         try:
             con.execute("ALTER TABLE icp ADD COLUMN employee_hash TEXT")

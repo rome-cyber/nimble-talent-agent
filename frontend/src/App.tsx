@@ -22,8 +22,15 @@ const RATINGS_KEY  = 'talent-candidate-ratings'
 const SAVED_KEY    = 'talent-saved-searches'
 const LAST_RUN_KEY = 'talent-last-run'
 const COMPANY_KEY  = 'talent-company-setup'
+const USER_ID_KEY  = 'talent-user-id'
 const MAX_SAVED    = 20
 const LAST_RUN_TTL = 24 * 60 * 60 * 1000 // 24 hours
+
+function getUserId(): string {
+  let id = localStorage.getItem(USER_ID_KEY)
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem(USER_ID_KEY, id) }
+  return id
+}
 
 interface CompanySetup {
   company_name: string
@@ -62,11 +69,26 @@ interface SavedSearch {
   saved_at: number
 }
 
-function readSaved(): SavedSearch[] {
-  try { return JSON.parse(localStorage.getItem(SAVED_KEY) || '[]') } catch { return [] }
-}
-function writeSaved(list: SavedSearch[]) {
-  localStorage.setItem(SAVED_KEY, JSON.stringify(list))
+// ── Search API helpers ─────────────────────────────────────────────────────────
+
+const searchApi = {
+  list: (): Promise<SavedSearch[]> =>
+    fetch('/api/searches', { headers: { 'X-User-Id': getUserId() } })
+      .then(r => r.json()).catch(() => []),
+  get: (id: string): Promise<SavedSearch> =>
+    fetch(`/api/searches/${id}`, { headers: { 'X-User-Id': getUserId() } })
+      .then(r => r.json()),
+  rename: (id: string, name: string): Promise<void> =>
+    fetch(`/api/searches/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
+      body: JSON.stringify({ name }),
+    }).then(() => undefined),
+  remove: (id: string): Promise<void> =>
+    fetch(`/api/searches/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-User-Id': getUserId() },
+    }).then(() => undefined),
 }
 
 // ── Score helpers ──────────────────────────────────────────────────────────────
@@ -929,7 +951,7 @@ export default function App() {
   const [ratings,           setRatings]           = useState<Record<string, 'up' | 'down'>>({})
   const [loadedFromSave,    setLoadedFromSave]    = useState(false)
   const [currentSavedId,    setCurrentSavedId]    = useState<string | null>(null)
-  const [savedSearches,     setSavedSearches]     = useState<SavedSearch[]>(() => readSaved())
+  const [savedSearches,     setSavedSearches]     = useState<SavedSearch[]>([])
   const [savePromptOpen,    setSavePromptOpen]    = useState(false)
   const [saveName,          setSaveName]          = useState('')
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
@@ -969,6 +991,10 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/cache').then(r => r.json()).then(setCacheInfo).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    searchApi.list().then(setSavedSearches)
   }, [])
 
   // Live elapsed counter — ticks every second while running
@@ -1036,41 +1062,28 @@ export default function App() {
     return `${jobTitle} · ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
   }
 
-  const doSave = () => {
-    const name  = saveName.trim() || defaultSaveName()
-    const entry: SavedSearch = {
-      id: crypto.randomUUID(),
-      name,
-      job_title: jobTitle,
-      additional_notes: notes,
-      candidates,
-      icp,
-      queries: queriesLog,
-      strong_count: candidates.filter(c => c.overall_score >= 7).length,
-      total_count: candidates.length,
-      saved_at: Date.now(),
-    }
-    const next = [entry, ...savedSearches].slice(0, MAX_SAVED)
-    try { writeSaved(next) } catch {}   // never let a storage error block the UI
-    setSavedSearches(next)
-    setCurrentSavedId(entry.id)
+  const doSave = async () => {
+    if (!currentSavedId) return
+    const name = saveName.trim() || defaultSaveName()
+    try {
+      await searchApi.rename(currentSavedId, name)
+      const list = await searchApi.list()
+      setSavedSearches(list)
+    } catch {}
     setSavePromptOpen(false)
   }
 
-  const deleteSavedSearch = (id: string) => {
-    setSavedSearches(prev => {
-      const next = prev.filter(s => s.id !== id)
-      writeSaved(next)
-      return next
-    })
+  const deleteSavedSearch = async (id: string) => {
+    setSavedSearches(prev => prev.filter(s => s.id !== id))
     if (currentSavedId === id) setCurrentSavedId(null)
+    try { await searchApi.remove(id) } catch {}
   }
 
-  const loadSavedSearch = (s: SavedSearch) => {
+  const loadSavedSearch = async (s: SavedSearch) => {
     esRef.current?.close()
     closeDrawer()
     setJobTitle(s.job_title)
-    setNotes(s.additional_notes)
+    setNotes(s.additional_notes || '')
     setPhases([])
     setFraction(1)
     setDisplayFraction(1)
@@ -1078,14 +1091,24 @@ export default function App() {
     setRemaining(0)
     setIcp(s.icp)
     setJobDesc('')
-    setCandidates(s.candidates)
-    setQueriesLog(s.queries)
+    setQueriesLog(s.queries || [])
     setTotalElapsed(0)
     setWeakOpen(false)
     setSavePromptOpen(false)
     setCurrentSavedId(s.id)
     setLoadedFromSave(true)
     setStatus('done')
+    // Candidates are loaded on demand (list endpoint returns empty [])
+    if (s.candidates?.length) {
+      setCandidates(s.candidates)
+    } else {
+      try {
+        const full = await searchApi.get(s.id)
+        setCandidates(full.candidates || [])
+        if (full.icp) setIcp(full.icp)
+        if (full.queries?.length) setQueriesLog(full.queries)
+      } catch {}
+    }
   }
 
   // ── Run control ───────────────────────────────────────────────────────────────
@@ -1123,7 +1146,7 @@ export default function App() {
     try {
       const res = await fetch('/api/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-User-Id': getUserId() },
         body: JSON.stringify({
           job_title: jobTitle,
           additional_notes: notes,
@@ -1165,6 +1188,7 @@ export default function App() {
         setFraction(1)
         setStatus('done')
         if (ev.usage) setUsageStats(ev.usage)
+        if (ev.search_id) setCurrentSavedId(ev.search_id)
         es.close()
         fetch('/api/cache').then(r => r.json()).then(setCacheInfo).catch(() => {})
       } else if (ev.type === 'error') {
@@ -1320,7 +1344,7 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-3 flex-wrap">
-                {!loadedFromSave && !currentSavedId && (
+                {!loadedFromSave && currentSavedId && !savedSearches.find(s => s.id === currentSavedId) && (
                   savePromptOpen ? (
                     <div className="flex items-center gap-2 card px-3 py-1.5">
                       <input

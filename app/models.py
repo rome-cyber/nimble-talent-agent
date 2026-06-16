@@ -35,3 +35,6 @@ class TalentState(TypedDict, total=False):
     # Control
     iteration: int
     force_refresh: bool     # bypass cache for employees/ICP/role
+
+    # Learning — signals from past high-scoring candidates for this role type
+    past_signals: list

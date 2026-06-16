@@ -6,3 +6,4 @@ aiofiles>=23.0.0
 requests>=2.32.0
 python-dotenv>=1.0.0
 typing-extensions>=4.0.0
+psycopg2-binary>=2.9.0

@@ -26,6 +26,26 @@ def generate_queries(state: TalentState) -> dict:
     company_name    = (state.get("company_name") or "the company").strip()
     company_ctx     = build_company_context(state)
 
+    past_signals     = state.get("past_signals") or []
+    signals_context  = ""
+    if past_signals:
+        s = past_signals[0]
+        companies = ", ".join(s.get("top_companies", []))
+        skills    = ", ".join(s.get("common_skills", []))
+        avail     = ", ".join(s.get("availability_patterns", []))
+        why       = "; ".join(s.get("why_yes_examples", []))
+        n         = s.get("sample_count", 0)
+        signals_context = f"""
+SIGNALS FROM {n} PAST HIGH-SCORING CANDIDATES (same role type):
+Top companies they came from: {companies or 'none yet'}
+Common skills in their headlines: {skills or 'none yet'}
+Availability patterns observed: {avail or 'none yet'}
+Why they scored well: {why or 'none yet'}
+
+→ Use the top companies for lookalike targeting in Strategy B.
+→ Use the common skills to sharpen Strategy A and E queries.
+"""
+
     refinement_context = ""
     if iteration > 0 and scored:
         avg_role     = sum(c.get("role_fit_score", 0) for c in scored) / len(scored)
@@ -53,7 +73,7 @@ Description: {job_description[:1500]}
 
 IDEAL CANDIDATE PROFILE:
 {json.dumps(icp, indent=2)[:1200]}
-{refinement_context}
+{signals_context}{refinement_context}
 
 Generate exactly {num_queries} Google Search queries — one per strategy below. Each must use a DIFFERENT strategy.
 Use Boolean operators (AND, OR, quotes) to maximize precision.
