@@ -29,22 +29,25 @@ def _should_refine(state: TalentState) -> str:
     scored    = state.get("scored_candidates", [])
     top       = [c for c in scored if c.get("overall_score", 0) >= 7]
     iteration = state.get("iteration", 0)
+    target    = state.get("target_candidates", 5)
+    # Allow more iterations for larger targets
+    max_iter  = 3 if target <= 10 else 4 if target <= 20 else 5
 
-    if len(top) >= 5:
-        print(f"[graph] Stopping: {len(top)} strong matches found after iteration {iteration}")
+    if len(top) >= target:
+        print(f"[graph] Stopping: {len(top)}/{target} strong matches found after iteration {iteration}")
         return "done"
 
-    if len(top) >= 3 and iteration >= 2:
+    if len(top) >= max(3, target // 2) and iteration >= 2:
         avg_role = sum(c.get("role_fit_score", 0) for c in scored) / len(scored) if scored else 0
         if avg_role > 6.5:
             print(f"[graph] Stopping: {len(top)} strong matches, avg role fit {avg_role:.1f} after iteration {iteration}")
             return "done"
 
-    if iteration >= 3:
-        print(f"[graph] Stopping: max iterations ({iteration}) reached with {len(top)} strong matches")
+    if iteration >= max_iter:
+        print(f"[graph] Stopping: max iterations ({iteration}) reached with {len(top)}/{target} strong matches")
         return "done"
 
-    print(f"[graph] Refining: only {len(top)} strong matches after iteration {iteration} — generating new queries")
+    print(f"[graph] Refining: {len(top)}/{target} strong matches after iteration {iteration} — generating new queries")
     return "refine"
 
 

@@ -944,6 +944,7 @@ export default function App() {
   const [jobDesc,           setJobDesc]           = useState('')
   const [candidates,        setCandidates]        = useState<Candidate[]>([])
   const [queriesLog,        setQueriesLog]        = useState<string[]>([])
+  const [targetCandidates,  setTargetCandidates]  = useState(10)
   const [minScore,          setMinScore]          = useState(5)
   const [cacheInfo,         setCacheInfo]         = useState<CacheInfo | null>(null)
   const [totalElapsed,      setTotalElapsed]      = useState(0)
@@ -1155,6 +1156,7 @@ export default function App() {
           company_website: company.company_website,
           company_linkedin_url: company.company_linkedin_url,
           candidate_icp: company.candidate_icp,
+          target_candidates: targetCandidates,
         }),
       })
       runId = (await res.json()).run_id
@@ -1251,6 +1253,32 @@ export default function App() {
                 placeholder="Hard requirements, deal-breakers, extra context…" />
             </div>
           </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-2">
+                Candidates to find
+              </label>
+              <div className="flex gap-2">
+                {[5, 10, 20, 50].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => setTargetCandidates(n)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors duration-150 ${
+                      targetCandidates === n
+                        ? 'text-[#0A0A0A]'
+                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                    }`}
+                    style={targetCandidates === n ? {
+                      background: 'linear-gradient(135deg,#F5D06B 0%,#E8B84B 55%,#C49520 100%)',
+                    } : {}}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <div className="flex items-center gap-3 pt-1">
             <button onClick={() => startRun()} disabled={!jobTitle.trim() || !company.company_name.trim() || status === 'running'}
               className="btn-gold flex items-center gap-2 text-sm px-5 py-2.5 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed">

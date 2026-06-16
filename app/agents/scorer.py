@@ -372,12 +372,14 @@ Return ONLY valid JSON array — no markdown, no explanation:
 def score_candidates(state: TalentState) -> dict:
     print("[score_candidates] Starting scoring pipeline...")
 
-    raw          = state.get("raw_candidates", [])
-    icp          = state.get("icp", {})
-    job_title    = state.get("job_title", "")
-    job_desc     = state.get("job_description", "")
-    company_name = (state.get("company_name") or "the company").strip()
-    company_ctx  = build_company_context(state)
+    raw              = state.get("raw_candidates", [])
+    icp              = state.get("icp", {})
+    job_title        = state.get("job_title", "")
+    job_desc         = state.get("job_description", "")
+    company_name     = (state.get("company_name") or "the company").strip()
+    company_ctx      = build_company_context(state)
+    target_candidates = state.get("target_candidates", 5)
+    sonnet_cap       = max(25, target_candidates * 4)
 
     # 1. Deduplicate by URL
     seen: set    = set()
@@ -414,14 +416,14 @@ def score_candidates(state: TalentState) -> dict:
     if filter_pct > 60:
         print(f"[score_candidates] WARNING: Haiku filtering >60% — queries may be too broad")
 
-    # 5. Dynamic cap after Haiku
-    if kept >= 40:
-        to_score = unique[:25]
-        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → capping at top 25 for Sonnet")
+    # 5. Dynamic cap after Haiku — scales with target_candidates
+    if kept > sonnet_cap:
+        to_score = unique[:sonnet_cap]
+        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → capping at top {sonnet_cap} for Sonnet (target={target_candidates})")
     else:
         to_score = unique[:]
         label = "sending all" if kept >= 20 else f"Haiku kept only {kept}"
-        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → {label} to Sonnet")
+        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → {label} to Sonnet (target={target_candidates})")
 
     if not to_score:
         return {

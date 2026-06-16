@@ -87,6 +87,7 @@ class RunRequest(BaseModel):
     company_website: str = ""
     company_linkedin_url: str = ""
     candidate_icp: str = ""
+    target_candidates: int = 5
 
 
 class RenameRequest(BaseModel):
@@ -114,6 +115,7 @@ def _run_graph(run_id: str, req: RunRequest, user_id: str = ""):
             "all_queries_used": [],
             "iteration": 0,
             "past_signals": past_signals,
+            "target_candidates": max(1, min(50, req.target_candidates)),
         }
 
         tracker = _Tracker()
