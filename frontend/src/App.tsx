@@ -1259,7 +1259,7 @@ export default function App() {
                 Candidates to find
               </label>
               <div className="flex gap-2">
-                {[5, 10, 20, 50].map(n => (
+                {[5, 10, 20, 35].map(n => (
                   <button
                     key={n}
                     onClick={() => setTargetCandidates(n)}
