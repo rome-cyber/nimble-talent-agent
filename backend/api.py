@@ -170,6 +170,11 @@ def _run_graph(run_id: str, req: RunRequest, user_id: str = ""):
                 emit({"type": "phase", "phase": "search_one_query",
                       "message": f"+{new} candidates  ({curr_raw} total)",
                       "from_cache": False, **tracker.snapshot()})
+                new_batch = current.get("raw_candidates", [])[-new:]
+                emit({"type": "raw_candidates", "previews": [
+                    {"name": c.get("name", ""), "headline": c.get("headline", ""), "url": c.get("url", "")}
+                    for c in new_batch
+                ]})
                 prev_raw = curr_raw
 
             if "scored_candidates" in current:

@@ -61,9 +61,13 @@ def build_graph():
     g.add_node("search_one_query", search_one_query)
     g.add_node("score_candidates", score_candidates)
 
+    # research_role runs in parallel with fetch_employees from START.
+    # It doesn't need employees — only job_title, company context, and careers page.
+    # generate_queries fans in from both, so it waits for both to finish.
     g.add_edge(START, "fetch_employees")
+    g.add_edge(START, "research_role")
     g.add_edge("fetch_employees", "build_icp")
-    g.add_edge("build_icp", "research_role")
+    g.add_edge("build_icp", "generate_queries")
     g.add_edge("research_role", "generate_queries")
     g.add_conditional_edges("generate_queries", _route_searches, ["search_one_query"])
     g.add_edge("search_one_query", "score_candidates")

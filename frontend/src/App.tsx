@@ -348,6 +348,40 @@ function SavedSearchesList({ searches, onLoad, onDelete, currentId }: {
   )
 }
 
+// ── Raw candidate preview list ─────────────────────────────────────────────────
+
+function RawCandidatesList({ previews, scoring }: {
+  previews: { name: string; headline: string; url: string }[]
+  scoring: boolean
+}) {
+  if (!previews.length) return null
+  return (
+    <div className="card overflow-hidden animate-fade-in">
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+          <Users size={12} /> Candidates found · {previews.length}
+        </span>
+        {scoring && (
+          <span className="flex items-center gap-1.5 text-[10px] text-amber-600 font-semibold">
+            <Loader2 size={10} className="animate-spin" /> Scoring…
+          </span>
+        )}
+      </div>
+      <div className="divide-y divide-slate-50 max-h-72 overflow-y-auto">
+        {previews.map((p, i) => (
+          <div key={p.url || i} className="px-4 py-2.5 flex items-start gap-2 animate-fade-in" style={{ animationDelay: `${Math.min(i, 5) * 40}ms` }}>
+            <div className="w-1.5 h-1.5 rounded-full bg-slate-200 mt-1.5 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-slate-700 truncate">{p.name || '—'}</p>
+              {p.headline && <p className="text-[11px] text-slate-400 leading-snug line-clamp-1">{p.headline}</p>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Progress panel ─────────────────────────────────────────────────────────────
 
 function ProgressPanel({ phases, displayFraction, liveElapsed, remaining, status, usage }: {
@@ -957,6 +991,7 @@ export default function App() {
   const [saveName,          setSaveName]          = useState('')
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
   const [usageStats,        setUsageStats]        = useState<Record<string, number> | null>(null)
+  const [rawPreviews,       setRawPreviews]       = useState<{name:string, headline:string, url:string}[]>([])
 
   const esRef              = useRef<EventSource | null>(null)
   const startTimeRef       = useRef<number>(0)
@@ -1134,6 +1169,7 @@ export default function App() {
     setCurrentSavedId(null)
     setLoadedFromSave(false)
     setUsageStats(null)
+    setRawPreviews([])
     setStatus('idle')
   }
 
@@ -1148,6 +1184,7 @@ export default function App() {
     setDisplayFraction(0)
     setLiveElapsed(0)
     setRemaining(54)
+    setRawPreviews([])
     if (!isRefresh) setCandidates([])
 
     let runId: string
@@ -1190,11 +1227,14 @@ export default function App() {
         setJobDesc(ev.text)
       } else if (ev.type === 'candidates') {
         pendingCandidates.current = ev.data   // buffer until 'done'
+      } else if (ev.type === 'raw_candidates') {
+        setRawPreviews(prev => [...prev, ...ev.previews])
       } else if (ev.type === 'queries') {
         setQueriesLog(ev.data)
       } else if (ev.type === 'done') {
         setTotalElapsed(ev.elapsed ?? liveElapsed)
         setCandidates(pendingCandidates.current)
+        setRawPreviews([])
         setFraction(1)
         setStatus('done')
         if (ev.usage) setUsageStats(ev.usage)
@@ -1317,6 +1357,10 @@ export default function App() {
               />
               <SearchStrategyPanel queries={queriesLog} />
               {jobDesc && <JobDescAccordion text={jobDesc} />}
+              <RawCandidatesList
+                previews={rawPreviews}
+                scoring={phases.some(p => p.phase === 'score_candidates')}
+              />
             </div>
             <div className="lg:col-span-2">
               {icp ? <ICPCard icp={icp} /> : <ICPSkeleton />}
