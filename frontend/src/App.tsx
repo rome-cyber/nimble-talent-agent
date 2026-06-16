@@ -1261,29 +1261,19 @@ export default function App() {
                 placeholder="Hard requirements, deal-breakers, extra context…" />
             </div>
           </div>
-          <div className="flex items-center gap-4 flex-wrap">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-2">
-                Candidates to find
-              </label>
-              <div className="flex gap-2">
-                {[5, 10, 20, 35].map(n => (
-                  <button
-                    key={n}
-                    onClick={() => setTargetCandidates(n)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors duration-150 ${
-                      targetCandidates === n
-                        ? 'text-[#0A0A0A]'
-                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                    }`}
-                    style={targetCandidates === n ? {
-                      background: 'linear-gradient(135deg,#F5D06B 0%,#E8B84B 55%,#C49520 100%)',
-                    } : {}}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-2">
+              Candidates to find · <span className="font-bold" style={{ color: 'var(--nimble-gold)' }}>{targetCandidates}</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] text-slate-400">5</span>
+              <input
+                type="range" min={5} max={35} step={5}
+                value={targetCandidates}
+                onChange={e => setTargetCandidates(Number(e.target.value))}
+                className="w-40"
+              />
+              <span className="text-[11px] text-slate-400">35</span>
             </div>
           </div>
 
