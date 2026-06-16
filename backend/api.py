@@ -89,6 +89,8 @@ class RunRequest(BaseModel):
     candidate_icp: str = ""
     target_candidates: int = 5
     seen_urls: list[str] = []
+    scoring_weights: dict = {}   # {role_fit, culture_fit, interest} — normalized in scorer
+    custom_signals: str = ""
 
 
 class RenameRequest(BaseModel):
@@ -118,6 +120,8 @@ def _run_graph(run_id: str, req: RunRequest, user_id: str = ""):
             "past_signals": past_signals,
             "target_candidates": max(1, min(35, req.target_candidates)),
             "seen_urls": list(req.seen_urls),
+            "scoring_weights": req.scoring_weights or {},
+            "custom_signals": req.custom_signals or "",
         }
 
         tracker = _Tracker()

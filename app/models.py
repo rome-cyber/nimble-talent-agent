@@ -40,3 +40,7 @@ class TalentState(TypedDict, total=False):
 
     # Learning — signals from past high-scoring candidates for this role type
     past_signals: list
+
+    # Scoring customization — set by the recruiter per run
+    scoring_weights: dict   # {role_fit: float, culture_fit: float, interest: float}, normalized to sum 1.0
+    custom_signals: str     # free text: extra signals/criteria the recruiter cares about

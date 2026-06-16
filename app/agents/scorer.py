@@ -6,16 +6,19 @@ Cost optimizations:
   B. Prompt caching: static context cached across batches (~90% cheaper after batch 1)
   C. Haiku pre-filter: cheap relevance pass on the FULL pool before Sonnet
   D. Python pre-ranking + dynamic cap: free heuristics surface best N; cap applied AFTER Haiku
+  E. Post signal fetch runs CONCURRENTLY with Haiku pre-filter (no extra wall-clock cost)
   F. Profile truncation: strip excess tokens before any LLM call
 
 Ordering in score_candidates():
   1. Deduplicate by URL
   2. _prerank_candidates()   — Python heuristics, no cap
   3. _truncate_profile()     — strip each profile before sending to LLMs
-  4. _prefilter_with_haiku() — filter irrelevant profiles from the FULL pool
+  4. Haiku pre-filter + post signal fetch run in parallel
   5. Dynamic cap             — send top N to Sonnet based on Haiku output size
-  6. _build_static_context() — build ONCE, same string to every batch (cache key)
-  7. Batch score with Sonnet — batch 1 primes cache, rest run in parallel
+  6. Inject post signals     — add post_signals field to capped candidates
+  7. _build_static_context() — build ONCE, same string to every batch (cache key)
+  8. Batch score with Sonnet — batch 1 primes cache, rest run in parallel
+  9. _apply_custom_weights() — recompute overall_score using recruiter weights (Python, not LLM)
 """
 
 from __future__ import annotations
@@ -26,11 +29,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import anthropic
 from app.models import TalentState
 from app.nimble_context import build_company_context
+from app import nimble_client as nimble
 
 _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), timeout=120.0)
 
 _BATCH_SIZE  = 5
 _HAIKU_BATCH = 40
+_POST_FETCH_N = 15   # fetch post signals for top N candidates after pre-ranking
 
 
 # ── F. Profile truncation ──────────────────────────────────────────────────────
@@ -43,6 +48,48 @@ def _truncate_profile(c: dict) -> dict:
         "headline": c.get("headline", ""),
         "snippet":  snippet[:500] if len(snippet) > 500 else snippet,
     }
+
+
+# ── E. LinkedIn post signal fetch ─────────────────────────────────────────────
+
+def _fetch_post_signals(candidates: list) -> dict[str, str]:
+    """
+    Search for recent LinkedIn post/activity signals for the top N pre-ranked candidates.
+    Runs concurrently with Haiku pre-filter — no extra wall-clock cost.
+    Returns {candidate_url: signal_text}.
+    """
+    top = [c for c in candidates[:_POST_FETCH_N] if c.get("name")]
+    if not top:
+        return {}
+
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(top))) as pool:
+        futures: dict = {}
+        for c in top:
+            name = c.get("name", "").strip()
+            url  = c.get("url", "")
+            # Search for indexed LinkedIn posts and pulse articles
+            query = f'"{name}" (site:linkedin.com/posts OR site:linkedin.com/pulse)'
+            futures[pool.submit(nimble.search, query, "general", 3)] = url
+
+        for future in as_completed(futures):
+            cand_url = futures[future]
+            try:
+                posts = future.result()
+                snippets = []
+                for p in posts[:4]:
+                    desc = (p.get("description") or "").strip()
+                    post_url = p.get("url", "")
+                    if desc and "linkedin.com" in post_url:
+                        snippets.append(desc[:250])
+                if snippets:
+                    results[cand_url] = " | ".join(snippets)
+            except Exception as e:
+                print(f"  [post_signals] {e}")
+
+    found = sum(1 for v in results.values() if v)
+    print(f"[post_signals] Found activity for {found}/{len(top)} candidates")
+    return results
 
 
 # ── C. Haiku pre-filter ───────────────────────────────────────────────────────
@@ -62,10 +109,9 @@ def _prefilter_with_haiku(
     if len(candidates) <= 4:
         return candidates
 
-    # Build keep/drop criteria from ICP if available
-    key_skills = icp.get("key_skills", [])
+    key_skills    = icp.get("key_skills", [])
     typical_roles = icp.get("typical_roles", [])
-    keep_hints = ""
+    keep_hints    = ""
     if key_skills:
         keep_hints += f"\nKey skills to look for: {', '.join(key_skills[:8])}"
     if typical_roles:
@@ -106,8 +152,8 @@ Return ONLY valid JSON array, one entry per candidate, same order:
 
             text = resp.content[0].text.strip()
             text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            verdicts = json.loads(text)
-            drop_set = {v["i"] - 1 for v in verdicts if not v.get("keep", True)}
+            verdicts  = json.loads(text)
+            drop_set  = {v["i"] - 1 for v in verdicts if not v.get("keep", True)}
             batch_kept = [c for i, c in enumerate(batch) if i not in drop_set]
             if drop_set:
                 print(f"  [prefilter] Haiku dropped {len(drop_set)}/{len(batch)} in this batch")
@@ -130,7 +176,7 @@ def _prerank_candidates(candidates: list, icp: dict) -> list:
     domain_signals     = ["startup", "scaleup", "b2b", "saas", "growth", "series"]
     availability_bonus = ["open to work", "looking for", "seeking", "available", "actively"]
 
-    raw_locations = icp.get("location_context", "") or ""
+    raw_locations  = icp.get("location_context", "") or ""
     location_bonus = [loc.strip().lower() for loc in raw_locations.replace("/", ",").split(",") if len(loc.strip()) > 2]
     if not location_bonus:
         location_bonus = ["remote"]
@@ -151,6 +197,29 @@ def _prerank_candidates(candidates: list, icp: dict) -> list:
     return sorted(candidates, key=_score, reverse=True)
 
 
+# ── 9. Apply custom weights (Python — never ask the LLM to do this) ───────────
+
+def _apply_custom_weights(scored: list, weights: dict) -> list:
+    """Recompute overall_score using recruiter-set weights. Clamps to 1–10."""
+    w_role    = weights.get("role_fit",    0.40)
+    w_culture = weights.get("culture_fit", 0.30)
+    w_interest = weights.get("interest",   0.30)
+    total = w_role + w_culture + w_interest
+    if total <= 0:
+        return scored
+    w_role    /= total
+    w_culture /= total
+    w_interest /= total
+    for c in scored:
+        raw = (
+            c.get("role_fit_score",    5) * w_role +
+            c.get("culture_fit_score", 5) * w_culture +
+            c.get("interest_score",    5) * w_interest
+        )
+        c["overall_score"] = max(1, min(10, round(raw)))
+    return scored
+
+
 # ── B. Static scoring context (cached across batches) ─────────────────────────
 
 def _build_static_context(
@@ -158,12 +227,36 @@ def _build_static_context(
     job_description: str,
     icp: dict,
     company_ctx: str,
+    scoring_weights: dict,
+    custom_signals: str,
 ) -> str:
     """
     Build the reusable scoring context once per run.
     The IDENTICAL string is passed to every batch — any variation breaks prompt caching.
     Must be >1024 tokens for Anthropic caching to activate.
     """
+    w_role    = scoring_weights.get("role_fit",    0.40)
+    w_culture = scoring_weights.get("culture_fit", 0.30)
+    w_interest = scoring_weights.get("interest",   0.30)
+    total = w_role + w_culture + w_interest or 1.0
+    role_pct    = round(w_role    / total * 100)
+    culture_pct = round(w_culture / total * 100)
+    interest_pct = 100 - role_pct - culture_pct
+
+    custom_block = ""
+    if custom_signals and custom_signals.strip():
+        custom_block = f"""
+══════════════════════════════════════════════
+RECRUITER PRIORITY SIGNALS
+══════════════════════════════════════════════
+The recruiter has flagged these as especially important for this search:
+
+{custom_signals.strip()}
+
+When you see clear evidence of these signals in a candidate's profile or posts, reflect that in
+their dimension scores (role fit, culture fit, or interest — whichever is most relevant).
+"""
+
     return f"""You are a senior talent sourcing agent.
 Your job: score candidates for BIDIRECTIONAL fit — would the company want to hire them, AND would they genuinely want to join?
 
@@ -182,32 +275,32 @@ IDEAL CANDIDATE PROFILE
 (from current employee analysis)
 ══════════════════════════════════════════════
 {json.dumps(icp, indent=2)[:1200]}
+{custom_block}
+══════════════════════════════════════════════
+SCORING WEIGHTS (recruiter priorities)
+══════════════════════════════════════════════
+Role fit:             {role_pct}% — technical skills, domain experience, requirements match
+Culture fit:          {culture_pct}% — background, company stage, ICP alignment
+Likelihood to join:   {interest_pct}% — availability signals, career stage, tenure, openness
+
+Score each dimension independently and accurately. The weighted overall score will be
+calculated externally — your job is to score each dimension on its own merits.
 
 ══════════════════════════════════════════════
-SCORING SCALE
+SCORING SCALE (apply to each dimension)
 ══════════════════════════════════════════════
 
-9–10  Near-perfect ICP match. Background aligns directly with the company's domain.
-      Startup history (2+ companies under 200 people). Currently at relevant stage.
-      Open to work signal visible, or ≤18 months at current role.
-
-7–8   Strong fit. Relevant IC at a B2B SaaS or startup.
-      2–3 year tenure — settled but not locked in.
-      Domain overlap is strong even without exact company match.
-
-5–6   Relevant background but at a large enterprise or adjacent domain.
-      Could be a fit but requires real effort to find and convert.
-
-3–4   Some relevant background but far from the ICP.
-      A long shot.
-
-1–2   Clear mismatch. Wrong domain, no signals of relevance.
+9–10  Near-perfect match for this dimension. Strong direct evidence in profile/posts.
+7–8   Strong fit. Clear relevant signals with minor gaps.
+5–6   Moderate fit. Some relevant background but notable gaps or distance from ideal.
+3–4   Weak fit. Few signals, mostly tangential.
+1–2   Clear mismatch for this dimension.
 
 ══════════════════════════════════════════════
 INTEREST SCORE — start at 5, apply deltas
 ══════════════════════════════════════════════
 POSITIVE signals (add):
-  +2.0  "Open to Work" or "seeking" visible in profile
+  +2.0  "Open to Work" or "seeking" visible in profile or posts
   +2.0  Two or more startup stints
   +1.5  Changed jobs within last 6–12 months
   +1.0  At current role 18–36 months (settled but not locked)
@@ -215,6 +308,8 @@ POSITIVE signals (add):
   +1.0  Remote-first or location-flexible signals
   +1.0  Located in preferred location per ICP above
   +0.5  Career stage suited for a startup move
+  +1.0  Posts about job search, career transitions, or openness to new roles
+  +0.5  Posts about startup life, entrepreneurship, or building something new
 
 NEGATIVE signals (subtract):
   -1.5  FAANG / Fortune 500 for 5+ years, zero startup history
@@ -223,14 +318,24 @@ NEGATIVE signals (subtract):
 RULES: No signals → stay at 5. Missing data is NOT negative. Cap 1–10.
 
 ══════════════════════════════════════════════
+POST SIGNALS FIELD
+══════════════════════════════════════════════
+Some candidates have a `post_signals` field containing snippets from their recent
+LinkedIn posts and articles. Use this to:
+  - Detect "open to work" or job-seeking language
+  - Identify thought leadership and domain depth
+  - Find startup affinity, builder mindset, or entrepreneurial signals
+  - Spot career transitions or role changes they've announced
+Post signals are ADDITIVE — the absence of a post_signals field is not a negative.
+
+══════════════════════════════════════════════
 CALIBRATION RULES
 ══════════════════════════════════════════════
 - Realistic center of mass for a good search: 6–8.
-- 9–10 is rare: reserve for near-perfect ICP match WITH clear interest signals.
+- 9–10 is rare: reserve for near-perfect match WITH clear evidence.
 - 1–3 is for clear mismatches only — not "I don't have enough info."
 - Missing data is NOT a reason to score below 5. Evidence-based, not absence-of-evidence.
 - Do NOT default to 5. Any evidence at all → go higher or lower.
-- overall_score = (role_fit × 0.40) + (culture_fit × 0.30) + (interest × 0.30), rounded.
 
 ══════════════════════════════════════════════
 OUTPUT FIELD INSTRUCTIONS
@@ -243,7 +348,7 @@ company_fit:
 
 candidate_fit:
   WHY THEY MIGHT WANT TO JOIN. 2–3 sentences.
-  Use career stage signals, tenure, startup history, and domain overlap.
+  Use career stage signals, tenure, startup history, domain overlap, and post signals if present.
   If signals are weak: write "Limited signals — interest would need to be verified directly."
 
 friction:
@@ -259,15 +364,15 @@ icp_match:
   Example: "Hits: production AI, startup background. Missing: domain overlap, location unclear."
 
 why_yes:
-  REASONS TO PRIORITIZE (recruiter perspective).
-  2–3 items.
+  REASONS TO PRIORITIZE (recruiter perspective). 2–3 items.
+  Include post-signal evidence if it's strong.
 
 why_no:
   GENUINE DEPRIORITIZERS. 1–2 items. Omit or leave empty if genuinely clean.
 
 role_fit_explanation:    1–2 sentences on role fit score specifically.
 culture_fit_explanation: 1–2 sentences on culture/background fit vs ICP.
-interest_explanation:    1–2 sentences explaining the interest score calculation.
+interest_explanation:    1–2 sentences explaining the interest score calculation, including any post signals used.
 reasoning:               2–3 sentence overall summary — worth reaching out or not, and why.
 """
 
@@ -282,8 +387,11 @@ def _score_batch(batch: list, static_context: str, batch_num: int = 0) -> tuple[
     n = len(batch)
     batch_prompt = f"""Score these {n} candidates for the role above. Return a JSON array of EXACTLY {n} objects in the SAME ORDER as the input.
 
+If a candidate has a `post_signals` field, use it to refine your assessment of their interests,
+availability, and domain fit. Post signals can raise or lower any dimension score.
+
 CANDIDATES:
-{json.dumps(batch, indent=2)[:3500]}
+{json.dumps(batch, indent=2)[:4000]}
 
 Return ONLY valid JSON array — no markdown, no explanation:
 [
@@ -303,9 +411,9 @@ Return ONLY valid JSON array — no markdown, no explanation:
     "icp_match": "One sentence: Hits: X, Y. Missing: A, B.",
     "role_fit_explanation": "1-2 sentences on role fit score",
     "culture_fit_explanation": "1-2 sentences on culture/background fit vs ICP",
-    "interest_explanation": "1-2 sentences explaining the interest score",
+    "interest_explanation": "1-2 sentences explaining the interest score, including any post signal evidence",
     "reasoning": "2-3 sentence overall summary for the recruiter",
-    "availability_signals": ["specific observable signal from profile"],
+    "availability_signals": ["specific observable signal from profile or posts"],
     "why_yes": ["reason recruiter should prioritize this person"],
     "why_no": ["genuine friction point or fit gap"],
     "career_snapshot": [
@@ -327,7 +435,6 @@ Return ONLY valid JSON array — no markdown, no explanation:
         }],
     )
 
-    # Truncation detected — split and retry
     if resp.stop_reason == "max_tokens":
         print(f"[score_batch] Truncated — retrying as 2x smaller batches")
         if len(batch) <= 1:
@@ -372,14 +479,30 @@ Return ONLY valid JSON array — no markdown, no explanation:
 def score_candidates(state: TalentState) -> dict:
     print("[score_candidates] Starting scoring pipeline...")
 
-    raw              = state.get("raw_candidates", [])
-    icp              = state.get("icp", {})
-    job_title        = state.get("job_title", "")
-    job_desc         = state.get("job_description", "")
-    company_name     = (state.get("company_name") or "the company").strip()
-    company_ctx      = build_company_context(state)
+    raw               = state.get("raw_candidates", [])
+    icp               = state.get("icp", {})
+    job_title         = state.get("job_title", "")
+    job_desc          = state.get("job_description", "")
+    company_name      = (state.get("company_name") or "the company").strip()
+    company_ctx       = build_company_context(state)
     target_candidates = state.get("target_candidates", 5)
-    sonnet_cap       = max(25, target_candidates * 4)
+    sonnet_cap        = max(25, target_candidates * 4)
+    scoring_weights   = state.get("scoring_weights") or {}
+    custom_signals    = state.get("custom_signals") or ""
+
+    # Normalize weights — fall back to defaults if missing/zero
+    _w_role    = scoring_weights.get("role_fit",    0.40)
+    _w_culture = scoring_weights.get("culture_fit", 0.30)
+    _w_interest = scoring_weights.get("interest",   0.30)
+    _total = _w_role + _w_culture + _w_interest
+    if _total <= 0:
+        scoring_weights = {"role_fit": 0.40, "culture_fit": 0.30, "interest": 0.30}
+    else:
+        scoring_weights = {
+            "role_fit":    _w_role    / _total,
+            "culture_fit": _w_culture / _total,
+            "interest":    _w_interest / _total,
+        }
 
     # 1. Deduplicate by URL — pre-seed with URLs from previous runs
     seen: set    = set(state.get("seen_urls", []))
@@ -404,31 +527,35 @@ def score_candidates(state: TalentState) -> dict:
     # 3. Truncate profiles before sending to any LLM
     unique = [_truncate_profile(c) for c in unique]
 
-    # 4. Haiku pre-filter on the FULL deduplicated pool
+    # 4. Haiku pre-filter + LinkedIn post signal fetch run IN PARALLEL
     token_acc: dict = {}
-    pre_haiku   = len(unique)
-    haiku_calls = 0
-    if len(unique) > 4:
-        unique      = _prefilter_with_haiku(unique, job_title, company_name, icp, token_acc)
-        haiku_calls = 1
+    haiku_calls     = 0
 
-    kept       = len(unique)
-    filtered   = pre_haiku - kept
-    filter_pct = int(filtered / pre_haiku * 100) if pre_haiku else 0
+    if len(unique) > 4:
+        with ThreadPoolExecutor(max_workers=2) as parallel_pool:
+            haiku_future = parallel_pool.submit(
+                _prefilter_with_haiku, unique, job_title, company_name, icp, token_acc
+            )
+            posts_future = parallel_pool.submit(_fetch_post_signals, unique)
+            unique       = haiku_future.result()
+            post_signals = posts_future.result()
+        haiku_calls = 1
+    else:
+        post_signals = _fetch_post_signals(unique)
+
+    pre_haiku   = len(state.get("raw_candidates", []))
+    kept        = len(unique)
+    filtered    = max(0, pre_haiku - kept - excluded)
+    filter_pct  = int(filtered / max(pre_haiku, 1) * 100)
     print(f"[score_candidates] Haiku filtered {filtered}/{pre_haiku} ({filter_pct}%)")
-    if pre_haiku > 20 and filter_pct < 20:
-        print(f"[score_candidates] WARNING: Haiku filtering <20% — queries may be well-targeted or too narrow")
-    if filter_pct > 60:
-        print(f"[score_candidates] WARNING: Haiku filtering >60% — queries may be too broad")
 
     # 5. Dynamic cap after Haiku — scales with target_candidates
     if kept > sonnet_cap:
         to_score = unique[:sonnet_cap]
-        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → capping at top {sonnet_cap} for Sonnet (target={target_candidates})")
+        print(f"[score_candidates] capping at top {sonnet_cap} for Sonnet (target={target_candidates})")
     else:
         to_score = unique[:]
-        label = "sending all" if kept >= 20 else f"Haiku kept only {kept}"
-        print(f"[score_candidates] {len(raw)} raw → {len(seen)} unique → Haiku kept {kept} → {label} to Sonnet (target={target_candidates})")
+        print(f"[score_candidates] sending {kept} to Sonnet (target={target_candidates})")
 
     if not to_score:
         return {
@@ -439,10 +566,18 @@ def score_candidates(state: TalentState) -> dict:
             },
         }
 
-    # 6. Build static context ONCE
-    static_context = _build_static_context(job_title, job_desc, icp, company_ctx)
+    # 6. Inject post signals into candidates going to Sonnet
+    for c in to_score:
+        sig = post_signals.get(c.get("url", ""), "")
+        if sig:
+            c["post_signals"] = sig
 
-    # 7. Batch 1 primes prompt cache; remaining batches run in parallel
+    # 7. Build static context ONCE (cache key — must be identical across all batches)
+    static_context = _build_static_context(
+        job_title, job_desc, icp, company_ctx, scoring_weights, custom_signals
+    )
+
+    # 8. Batch 1 primes prompt cache; remaining batches run in parallel
     all_scored: list = []
     sonnet_calls     = 0
     batches          = [to_score[i : i + _BATCH_SIZE] for i in range(0, len(to_score), _BATCH_SIZE)]
@@ -477,9 +612,11 @@ def score_candidates(state: TalentState) -> dict:
                 except Exception as e:
                     print(f"  [score_batch] ERROR on batch {batch_num}: {e} — skipping")
 
+    # 9. Apply custom weights in Python — never trust the LLM to do weighted arithmetic
+    all_scored = _apply_custom_weights(all_scored, scoring_weights)
     all_scored = sorted(all_scored, key=lambda x: x.get("overall_score", 0), reverse=True)
 
-    # 8. Credit estimate
+    # 10. Cost estimate
     est_cost = (
         (all_usage.get("haiku_input",  0) / 1_000_000) * 1.00 +
         (all_usage.get("haiku_output", 0) / 1_000_000) * 5.00 +
@@ -501,6 +638,8 @@ def score_candidates(state: TalentState) -> dict:
     top_count = sum(1 for c in all_scored if c.get("overall_score", 0) >= 7)
     print(
         f"[score_candidates] Done — {len(all_scored)} scored, {top_count} strong (≥7) | "
+        f"weights role={scoring_weights['role_fit']:.0%} culture={scoring_weights['culture_fit']:.0%} "
+        f"interest={scoring_weights['interest']:.0%} | "
         f"haiku={usage_stats['haiku_calls']} sonnet={usage_stats['sonnet_calls']} "
         f"est=${usage_stats['est_cost_usd']:.3f}"
     )

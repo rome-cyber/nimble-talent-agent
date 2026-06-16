@@ -18,13 +18,14 @@ const PHASE_LABELS: Record<string, string> = {
   score_candidates: 'Scoring candidates',
 }
 
-const RATINGS_KEY  = 'talent-candidate-ratings'
-const SAVED_KEY    = 'talent-saved-searches'
-const LAST_RUN_KEY = 'talent-last-run'
-const COMPANY_KEY  = 'talent-company-setup'
-const USER_ID_KEY  = 'talent-user-id'
-const MAX_SAVED    = 20
-const LAST_RUN_TTL = 24 * 60 * 60 * 1000 // 24 hours
+const RATINGS_KEY        = 'talent-candidate-ratings'
+const SAVED_KEY          = 'talent-saved-searches'
+const LAST_RUN_KEY       = 'talent-last-run'
+const COMPANY_KEY        = 'talent-company-setup'
+const USER_ID_KEY        = 'talent-user-id'
+const SCORING_PREFS_KEY  = 'talent-scoring-prefs'
+const MAX_SAVED          = 20
+const LAST_RUN_TTL       = 24 * 60 * 60 * 1000 // 24 hours
 
 function getUserId(): string {
   let id = localStorage.getItem(USER_ID_KEY)
@@ -52,6 +53,47 @@ function readCompany(): CompanySetup {
 }
 function writeCompany(c: CompanySetup) {
   localStorage.setItem(COMPANY_KEY, JSON.stringify(c))
+}
+
+// ── Scoring preferences ────────────────────────────────────────────────────────
+
+interface ScoringPrefs {
+  roleFit: number        // 1–10 slider
+  cultureFit: number     // 1–10 slider
+  interest: number       // 1–10 slider
+  customSignals: string  // free text
+}
+
+const DEFAULT_SCORING_PREFS: ScoringPrefs = {
+  roleFit: 8,
+  cultureFit: 5,
+  interest: 5,
+  customSignals: '',
+}
+
+function readScoringPrefs(): ScoringPrefs {
+  try { return { ...DEFAULT_SCORING_PREFS, ...JSON.parse(localStorage.getItem(SCORING_PREFS_KEY) || '{}') } }
+  catch { return DEFAULT_SCORING_PREFS }
+}
+function writeScoringPrefs(p: ScoringPrefs) {
+  localStorage.setItem(SCORING_PREFS_KEY, JSON.stringify(p))
+}
+
+function normalizeWeights(p: ScoringPrefs) {
+  const total = p.roleFit + p.cultureFit + p.interest || 1
+  return {
+    role_fit:    p.roleFit    / total,
+    culture_fit: p.cultureFit / total,
+    interest:    p.interest   / total,
+  }
+}
+
+function effectivePcts(p: ScoringPrefs) {
+  const total = p.roleFit + p.cultureFit + p.interest || 1
+  const role    = Math.round(p.roleFit    / total * 100)
+  const culture = Math.round(p.cultureFit / total * 100)
+  const int_    = 100 - role - culture
+  return { role, culture, interest: int_ }
 }
 
 // ── Saved-search types ─────────────────────────────────────────────────────────
@@ -206,6 +248,134 @@ function CompanySetupCard({ setup, onChange }: {
           <p className="text-[11px] text-slate-400 italic">
             Saved automatically to your browser. Never sent anywhere except your own backend.
           </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Scoring preferences card ───────────────────────────────────────────────────
+
+function ScoringPrefsCard({ prefs, onChange }: {
+  prefs: ScoringPrefs
+  onChange: (p: ScoringPrefs) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const pcts = effectivePcts(prefs)
+  const isCustom = prefs.roleFit !== DEFAULT_SCORING_PREFS.roleFit ||
+                   prefs.cultureFit !== DEFAULT_SCORING_PREFS.cultureFit ||
+                   prefs.interest !== DEFAULT_SCORING_PREFS.interest ||
+                   prefs.customSignals.trim() !== ''
+
+  const set = (field: keyof ScoringPrefs) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const val = e.target.type === 'range' ? Number(e.target.value) : e.target.value
+    onChange({ ...prefs, [field]: val })
+  }
+
+  const DimSlider = ({ label, sub, field, value }: {
+    label: string; sub: string; field: 'roleFit' | 'cultureFit' | 'interest'; value: number
+  }) => (
+    <div>
+      <div className="flex items-baseline justify-between mb-1">
+        <div>
+          <span className="text-xs font-semibold text-slate-700">{label}</span>
+          <span className="text-[11px] text-slate-400 ml-2">{sub}</span>
+        </div>
+        <span className="text-xs font-bold tabular-nums" style={{ color: value >= 7 ? '#059669' : value >= 4 ? '#d97706' : '#6b7280' }}>
+          {value}/10
+        </span>
+      </div>
+      <input
+        type="range" min={1} max={10} step={1}
+        value={value}
+        onChange={set(field)}
+        className="w-full"
+      />
+    </div>
+  )
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors duration-150"
+      >
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+          <Target size={12} /> Scoring preferences
+          {isCustom && (
+            <span className="text-amber-600 font-semibold normal-case tracking-normal text-[11px]">
+              · customized
+            </span>
+          )}
+        </span>
+        <div className="flex items-center gap-3">
+          {!open && (
+            <span className="text-[11px] text-slate-400 tabular-nums">
+              Role {pcts.role}% · Culture {pcts.culture}% · Interest {pcts.interest}%
+            </span>
+          )}
+          {open ? <ChevronUp size={13} className="text-slate-300" /> : <ChevronDown size={13} className="text-slate-300" />}
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100 px-4 py-4 space-y-5 animate-slide-down">
+          <div className="space-y-4">
+            <DimSlider
+              label="Role fit"
+              sub="Technical skills, experience, domain overlap"
+              field="roleFit"
+              value={prefs.roleFit}
+            />
+            <DimSlider
+              label="Culture fit"
+              sub="Company background, startup stage, ICP alignment"
+              field="cultureFit"
+              value={prefs.cultureFit}
+            />
+            <DimSlider
+              label="Likelihood to join"
+              sub="Availability signals, tenure, career stage"
+              field="interest"
+              value={prefs.interest}
+            />
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] text-slate-500 bg-slate-50 rounded-lg px-3 py-2 tabular-nums">
+            <Zap size={11} style={{ color: 'var(--nimble-gold)' }} />
+            Effective weights:
+            <span className="font-semibold text-slate-700">Role {pcts.role}%</span>
+            <span className="text-slate-300">·</span>
+            <span className="font-semibold text-slate-700">Culture {pcts.culture}%</span>
+            <span className="text-slate-300">·</span>
+            <span className="font-semibold text-slate-700">Interest {pcts.interest}%</span>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
+              Priority signals <span className="text-slate-300 normal-case font-normal tracking-normal">optional</span>
+            </label>
+            <textarea
+              className="field resize-none"
+              rows={3}
+              value={prefs.customSignals}
+              onChange={set('customSignals')}
+              placeholder="e.g. founder background, open source contributions, published AI papers, shipped LLM products in production"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              The agent searches LinkedIn posts and profiles for these signals and scores accordingly.
+              Candidates who match get a bump — those who don't aren't penalized.
+            </p>
+          </div>
+
+          {isCustom && (
+            <button
+              onClick={() => onChange(DEFAULT_SCORING_PREFS)}
+              className="text-[11px] text-slate-400 hover:text-slate-600 transition-colors duration-150"
+            >
+              Reset to defaults
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -966,6 +1136,7 @@ function JobDescAccordion({ text }: { text: string }) {
 
 export default function App() {
   const [company,           setCompany]           = useState<CompanySetup>(() => readCompany())
+  const [scoringPrefs,      setScoringPrefs]      = useState<ScoringPrefs>(() => readScoringPrefs())
   const [jobTitle,          setJobTitle]          = useState('')
   const [notes,             setNotes]             = useState('')
   const [status,            setStatus]            = useState<'idle' | 'running' | 'done' | 'error'>('idle')
@@ -1078,6 +1249,11 @@ export default function App() {
   const updateCompany = (s: CompanySetup) => {
     setCompany(s)
     writeCompany(s)
+  }
+
+  const updateScoringPrefs = (p: ScoringPrefs) => {
+    setScoringPrefs(p)
+    writeScoringPrefs(p)
   }
 
   // ── Ratings ───────────────────────────────────────────────────────────────────
@@ -1202,6 +1378,8 @@ export default function App() {
           candidate_icp: company.candidate_icp,
           target_candidates: targetCandidates,
           seen_urls: refreshSeenUrls,
+          scoring_weights: normalizeWeights(scoringPrefs),
+          custom_signals: scoringPrefs.customSignals,
         }),
       })
       runId = (await res.json()).run_id
@@ -1281,6 +1459,9 @@ export default function App() {
 
         {/* Company setup */}
         <CompanySetupCard setup={company} onChange={updateCompany} />
+
+        {/* Scoring preferences */}
+        <ScoringPrefsCard prefs={scoringPrefs} onChange={updateScoringPrefs} />
 
         {/* Search form */}
         <div className="card p-6 space-y-4 animate-fade-in-up">
