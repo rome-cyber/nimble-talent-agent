@@ -381,14 +381,19 @@ def score_candidates(state: TalentState) -> dict:
     target_candidates = state.get("target_candidates", 5)
     sonnet_cap       = max(25, target_candidates * 4)
 
-    # 1. Deduplicate by URL
-    seen: set    = set()
+    # 1. Deduplicate by URL — pre-seed with URLs from previous runs
+    seen: set    = set(state.get("seen_urls", []))
     unique: list = []
+    excluded     = 0
     for c in raw:
         url = c.get("url", "")
         if url and url not in seen:
             seen.add(url)
             unique.append(c)
+        elif url in set(state.get("seen_urls", [])):
+            excluded += 1
+    if excluded:
+        print(f"[score_candidates] Excluded {excluded} previously seen candidates")
 
     if not unique:
         return {"scored_candidates": []}

@@ -34,8 +34,9 @@ class TalentState(TypedDict, total=False):
 
     # Control
     iteration: int
-    force_refresh: bool     # bypass cache for employees/ICP/role
-    target_candidates: int  # how many strong matches (≥7) to find before stopping
+    force_refresh: bool      # bypass cache for employees/ICP/role
+    target_candidates: int   # how many strong matches (≥7) to find before stopping
+    seen_urls: list          # URLs from previous runs — filtered out before scoring
 
     # Learning — signals from past high-scoring candidates for this role type
     past_signals: list

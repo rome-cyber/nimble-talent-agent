@@ -1137,11 +1137,18 @@ export default function App() {
     setStatus('idle')
   }
 
-  const startRun = async (forceRefresh = false) => {
+  const startRun = async (forceRefresh = false, refreshSeenUrls: string[] = []) => {
     if (!jobTitle.trim()) return
-    reset()
+    const isRefresh = refreshSeenUrls.length > 0
+    if (!isRefresh) reset()
     startTimeRef.current = performance.now()
     setStatus('running')
+    setPhases([])
+    setFraction(0)
+    setDisplayFraction(0)
+    setLiveElapsed(0)
+    setRemaining(54)
+    if (!isRefresh) setCandidates([])
 
     let runId: string
     try {
@@ -1157,6 +1164,7 @@ export default function App() {
           company_linkedin_url: company.company_linkedin_url,
           candidate_icp: company.candidate_icp,
           target_candidates: targetCandidates,
+          seen_urls: refreshSeenUrls,
         }),
       })
       runId = (await res.json()).run_id
@@ -1372,6 +1380,14 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-3 flex-wrap">
+                {!loadedFromSave && candidates.length > 0 && (
+                  <button
+                    onClick={() => startRun(false, candidates.map(c => c.url))}
+                    className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 card px-3 py-2 transition-colors duration-150"
+                  >
+                    <RefreshCw size={13} /> Refresh candidates
+                  </button>
+                )}
                 {!loadedFromSave && currentSavedId && !savedSearches.find(s => s.id === currentSavedId) && (
                   savePromptOpen ? (
                     <div className="flex items-center gap-2 card px-3 py-1.5">
